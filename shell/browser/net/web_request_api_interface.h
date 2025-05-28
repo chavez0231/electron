@@ -58,6 +58,16 @@ class WebRequestAPI {
                            const network::ResourceRequest& request,
                            int net_error) = 0;
   virtual void OnRequestWillBeDestroyed(extensions::WebRequestInfo* info) = 0;
+
+  // Called when the response body is available for inspection and modification
+  // Not part of the default WebRequestAPI, this is added by Electron
+  virtual int OnResponseReceived(extensions::WebRequestInfo* info,
+                                const network::ResourceRequest& request,
+                                net::CompletionOnceCallback callback,
+                                std::string* response_body) {
+    // Default implementation just completes successfully without modification
+    return net::OK;
+  }
 };
 
 }  // namespace electron

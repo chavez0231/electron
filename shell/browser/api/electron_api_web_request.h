@@ -91,6 +91,10 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
                    const network::ResourceRequest& request,
                    int net_error) override;
   void OnRequestWillBeDestroyed(extensions::WebRequestInfo* info) override;
+  void OnResponseReceived(extensions::WebRequestInfo* info,
+                         const network::ResourceRequest& request,
+                         net::CompletionOnceCallback callback,
+                         std::string* response_body);
 
  private:
   WebRequest(v8::Isolate* isolate, content::BrowserContext* browser_context);
@@ -112,6 +116,7 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
     kOnBeforeRequest,
     kOnBeforeSendHeaders,
     kOnHeadersReceived,
+    kOnResponseReceived,
   };
 
   using SimpleListener = base::RepeatingCallback<void(v8::Local<v8::Value>)>;
@@ -147,6 +152,11 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
       net::CompletionOnceCallback callback,
       const net::HttpResponseHeaders* original_response_headers,
       scoped_refptr<net::HttpResponseHeaders>* override_response_headers);
+  int HandleOnResponseReceivedResponseEvent(
+      extensions::WebRequestInfo* request_info,
+      const network::ResourceRequest& request,
+      net::CompletionOnceCallback callback,
+      std::string* response_body);
 
   void OnBeforeRequestListenerResult(uint64_t id,
                                      v8::Local<v8::Value> response);
@@ -154,6 +164,8 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
                                          v8::Local<v8::Value> response);
   void OnHeadersReceivedListenerResult(uint64_t id,
                                        v8::Local<v8::Value> response);
+  void OnResponseReceivedListenerResult(uint64_t id,
+                                      v8::Local<v8::Value> response);
 
   class RequestFilter {
    public:
@@ -207,6 +219,9 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
 
   // Weak-ref, it manages us.
   raw_ptr<content::BrowserContext> browser_context_;
+
+  // Only used for onResponseReceived.
+  raw_ptr<std::string> response_body = nullptr;
 };
 
 }  // namespace electron::api
