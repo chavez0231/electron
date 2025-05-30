@@ -26,6 +26,7 @@
 #include "shell/common/options_switches.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/origin.h"
+#include "base/containers/span.h"
 
 namespace electron {
 
@@ -662,11 +663,11 @@ void ProxyingURLLoaderFactory::InProgressRequest::ContinueToResponseStarted(
   
   // First send the response header to the client
   target_client_->OnReceiveResponse(current_response_.Clone(), 
-                                   nullptr, 
+                                   std::move(current_body_),
                                    std::move(current_cached_metadata_));
 
-  // Then process the body with our interception logic
-  OnReceiveBody(std::move(current_body_));
+  // Don't need to process the body as it's already sent with the response
+  ContinueToCompleted(net::OK);
 }
 
 void ProxyingURLLoaderFactory::InProgressRequest::ContinueToBeforeRedirect(
@@ -752,10 +753,10 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveBody(
   // If the WebRequest API has listeners for the onResponseReceived event,
   // we need to buffer the response body, intercept it, potentially modify it,
   // and then send it to the client.
-  if (web_request_api_->HasListener()) {
+  if (factory_->web_request_api()->HasListener()) {
     // Read the entire body into a string
     std::string response_body;
-    if (ReadResponseBody(body, &response_body)) {
+    if (ReadResponseBody(std::move(body), &response_body)) {
       // Call the WebRequest API with the body
       auto callback = base::BindOnce(
           &ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived,
@@ -780,7 +781,7 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveBody(
   }
 
   // Default behavior - just forward the body to the client
-  target_client_->OnReceiveBody(std::move(body));
+  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(body), std::nullopt);
   ContinueToCompleted(net::OK);
 }
 
@@ -788,25 +789,20 @@ bool ProxyingURLLoaderFactory::InProgressRequest::ReadResponseBody(
     mojo::ScopedDataPipeConsumerHandle body,
     std::string* out_body) {
   // Read the body into a string
-  uint32_t available = 0;
-  MojoResult result = body->BeginReadData(nullptr, &available, MOJO_READ_DATA_FLAG_NONE);
+  base::span<const uint8_t> buffer;
+  MojoResult result = body->BeginReadData(MOJO_READ_DATA_FLAG_NONE, buffer);
   if (result != MOJO_RESULT_OK)
     return false;
 
-  if (available == 0) {
+  if (buffer.empty()) {
     // Empty body
     *out_body = "";
     return true;
   }
 
-  out_body->resize(available);
-  uint32_t num_bytes = available;
-  result = body->ReadData(out_body->data(), &num_bytes, MOJO_READ_DATA_FLAG_NONE);
-  if (result != MOJO_RESULT_OK)
-    return false;
-
-  out_body->resize(num_bytes);
-  return true;
+  out_body->assign(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+  result = body->EndReadData(buffer.size());
+  return result == MOJO_RESULT_OK;
 }
 
 void ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived(
@@ -828,9 +824,13 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived(
   }
 
   // Write the modified body to the data pipe
-  uint32_t bytes_written = 0;
+  size_t bytes_written = 0;
+  // Create a span from the string's data in a safe way
+  auto data_span = base::as_bytes(base::span(original_body));
   mojo_result = producer->WriteData(
-      original_body.data(), &bytes_written, MOJO_WRITE_DATA_FLAG_NONE);
+      data_span,
+      MOJO_WRITE_DATA_FLAG_NONE,
+      bytes_written);
   
   if (mojo_result != MOJO_RESULT_OK || bytes_written != original_body.size()) {
     OnRequestError(network::URLLoaderCompletionStatus(net::ERR_FAILED));
@@ -838,7 +838,7 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived(
   }
 
   // Send the modified body to the client
-  target_client_->OnReceiveBody(std::move(consumer));
+  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(consumer), std::nullopt);
   ContinueToCompleted(net::OK);
 }
 

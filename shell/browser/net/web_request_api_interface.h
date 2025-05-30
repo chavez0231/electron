@@ -64,11 +64,17 @@ class WebRequestAPI {
   virtual int OnResponseReceived(extensions::WebRequestInfo* info,
                                 const network::ResourceRequest& request,
                                 net::CompletionOnceCallback callback,
-                                std::string* response_body) {
-    // Default implementation just completes successfully without modification
-    return net::OK;
-  }
+                                std::string* response_body);
 };
+
+// Default implementation for OnResponseReceived
+inline int WebRequestAPI::OnResponseReceived(extensions::WebRequestInfo* info,
+                                const network::ResourceRequest& request,
+                                net::CompletionOnceCallback callback,
+                                std::string* response_body) {
+  // Default implementation just completes successfully without modification
+  return net::OK;
+}
 
 }  // namespace electron
 

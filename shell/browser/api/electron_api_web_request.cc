@@ -774,23 +774,24 @@ gin::Handle<WebRequest> WebRequest::From(
   return gin::CreateHandle(isolate, user_data->data.get());
 }
 
-void WebRequest::OnResponseReceived(extensions::WebRequestInfo* info,
+int WebRequest::OnResponseReceived(extensions::WebRequestInfo* info,
                                    const network::ResourceRequest& request,
                                    net::CompletionOnceCallback callback,
-                                   std::string* response_body) {
-  int result = HandleOnResponseReceivedResponseEvent(info, request, std::move(callback), response_body);
+                                   std::string* response_body_param) {
+  int result = HandleOnResponseReceivedResponseEvent(info, request, std::move(callback), response_body_param);
   if (result != net::ERR_IO_PENDING) {
     // If we're not waiting for the callback, complete immediately
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), result));
   }
+  return result;
 }
 
 int WebRequest::HandleOnResponseReceivedResponseEvent(
     extensions::WebRequestInfo* request_info,
     const network::ResourceRequest& request,
     net::CompletionOnceCallback callback,
-    std::string* response_body) {
+    std::string* response_body_param) {
   const auto iter = response_listeners_.find(ResponseEvent::kOnResponseReceived);
   if (iter == std::end(response_listeners_))
     return net::OK;
@@ -801,7 +802,7 @@ int WebRequest::HandleOnResponseReceivedResponseEvent(
 
   BlockedRequest blocked_request;
   blocked_request.callback = std::move(callback);
-  blocked_request.response_body = response_body;
+  blocked_request.response_body = response_body_param;
   blocked_request.request = request_info;
   blocked_requests_[request_info->id] = std::move(blocked_request);
 
@@ -810,8 +811,8 @@ int WebRequest::HandleOnResponseReceivedResponseEvent(
   gin_helper::Dictionary details(isolate, v8::Object::New(isolate));
   FillDetails(&details, request_info, request);
   
-  if (response_body) {
-    details.Set("responseBody", *response_body);
+  if (response_body_param) {
+    details.Set("responseBody", *response_body_param);
   }
 
   ResponseCallback response =
@@ -831,7 +832,6 @@ void WebRequest::OnResponseReceivedListenerResult(
   auto& request = iter->second;
 
   int result = net::OK;
-  bool user_modified_body = false;
   if (response->IsObject()) {
     v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
     gin::Dictionary dict(isolate, response.As<v8::Object>());
@@ -843,7 +843,6 @@ void WebRequest::OnResponseReceivedListenerResult(
     } else if (request.response_body) {
       std::string new_body;
       if (dict.Get("responseBody", &new_body)) {
-        user_modified_body = true;
         *request.response_body = std::move(new_body);
       }
     }

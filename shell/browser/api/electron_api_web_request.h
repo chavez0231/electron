@@ -91,10 +91,10 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
                    const network::ResourceRequest& request,
                    int net_error) override;
   void OnRequestWillBeDestroyed(extensions::WebRequestInfo* info) override;
-  void OnResponseReceived(extensions::WebRequestInfo* info,
+  int OnResponseReceived(extensions::WebRequestInfo* info,
                          const network::ResourceRequest& request,
                          net::CompletionOnceCallback callback,
-                         std::string* response_body);
+                         std::string* response_body_param) override;
 
  private:
   WebRequest(v8::Isolate* isolate, content::BrowserContext* browser_context);
@@ -156,7 +156,7 @@ class WebRequest final : public gin::Wrappable<WebRequest>,
       extensions::WebRequestInfo* request_info,
       const network::ResourceRequest& request,
       net::CompletionOnceCallback callback,
-      std::string* response_body);
+      std::string* response_body_param);
 
   void OnBeforeRequestListenerResult(uint64_t id,
                                      v8::Local<v8::Value> response);

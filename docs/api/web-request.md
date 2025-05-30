@@ -108,9 +108,9 @@ Some examples of valid `urls`:
     - `requestHeaders` Record\<string, string\>
   - `callback` Function
     - `beforeSendResponse` Object
-      _ `cancel` boolean (optional)
-      _ `requestHeaders` Record\<string, string | string[]\> (optional) - When provided, request will be made
-      with these headers.
+      - `cancel` boolean (optional)
+      - `requestHeaders` Record\<string, string | string[]\> (optional) - When provided, request will be made
+        with these headers.
 
 The `listener` will be called with `listener(details, callback)` before sending
 an HTTP request, once the request headers are available. This may occur after a
