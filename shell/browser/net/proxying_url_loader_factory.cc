@@ -26,6 +26,7 @@
 #include "shell/common/options_switches.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/origin.h"
+#include "base/containers/span.h"
 
 namespace electron {
 
@@ -231,21 +232,26 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveResponse(
     network::mojom::URLResponseHeadPtr head,
     mojo::ScopedDataPipeConsumerHandle body,
     std::optional<mojo_base::BigBuffer> cached_metadata) {
+  current_response_ = std::move(head);
   current_body_ = std::move(body);
   current_cached_metadata_ = std::move(cached_metadata);
+
   if (current_request_uses_header_client_) {
-    // Use the headers we got from OnHeadersReceived as that'll contain
-    // Set-Cookie if it existed.
-    auto saved_headers = current_response_->headers;
-    current_response_ = std::move(head);
-    current_response_->headers = saved_headers;
-    ContinueToResponseStarted(net::OK);
-  } else {
-    current_response_ = std::move(head);
-    HandleResponseOrRedirectHeaders(
-        base::BindOnce(&InProgressRequest::ContinueToResponseStarted,
-                       weak_factory_.GetWeakPtr()));
+    // The response headers will be handled in OnHeadersReceived.
+    return;
   }
+
+  // If the request is a preflight, OnHeadersReceived will be called after this.
+  // Since we need access to those headers to determine if the preflight is
+  // successful (via the access control headers), we need to wait. We'll send
+  // the response then.
+  if (for_cors_preflight_) {
+    return;
+  }
+
+  HandleResponseOrRedirectHeaders(
+      base::BindOnce(&InProgressRequest::ContinueToResponseStarted,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveRedirect(
@@ -654,9 +660,14 @@ void ProxyingURLLoaderFactory::InProgressRequest::ContinueToResponseStarted(
   proxied_client_receiver_.Resume();
 
   factory_->web_request_api()->OnResponseStarted(&info_.value(), request_);
-  target_client_->OnReceiveResponse(current_response_.Clone(),
-                                    std::move(current_body_),
-                                    std::move(current_cached_metadata_));
+  
+  // First send the response header to the client
+  target_client_->OnReceiveResponse(current_response_.Clone(), 
+                                   std::move(current_body_),
+                                   std::move(current_cached_metadata_));
+
+  // Don't need to process the body as it's already sent with the response
+  ContinueToCompleted(net::OK);
 }
 
 void ProxyingURLLoaderFactory::InProgressRequest::ContinueToBeforeRedirect(
@@ -729,6 +740,119 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnRequestError(
 
   // Deletes |this|.
   factory_->RemoveRequest(network_service_request_id_, request_id_);
+}
+
+void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveBody(
+    mojo::ScopedDataPipeConsumerHandle body) {
+  // If there's no client (renderer crashed, etc.), just resume.
+  if (!target_client_) {
+    ContinueToCompleted(net::OK);
+    return;
+  }
+
+  // If the WebRequest API has listeners for the onResponseReceived event,
+  // we need to buffer the response body, intercept it, potentially modify it,
+  // and then send it to the client.
+  if (factory_->web_request_api()->HasListener()) {
+    // Read the entire body into a string
+    std::string response_body;
+    if (ReadResponseBody(std::move(body), &response_body)) {
+      // Call the WebRequest API with the body
+      auto callback = base::BindOnce(
+          &ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived,
+          weak_factory_.GetWeakPtr(), response_body);
+
+      int result = factory_->web_request_api()->OnResponseReceived(
+          &info_.value(), request_, std::move(callback), &response_body);
+
+      if (result == net::ERR_IO_PENDING) {
+        // The request is being intercepted, don't forward the body yet
+        return;
+      } else if (result != net::OK) {
+        // An error occurred, cancel the request
+        OnRequestError(network::URLLoaderCompletionStatus(result));
+        return;
+      } else {
+        // No interception occurred, or the interception completed synchronously
+        OnResponseBodyReceived(response_body, net::OK);
+        return;
+      }
+    }
+  }
+
+  // Default behavior - just forward the body to the client
+  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(body), std::nullopt);
+  ContinueToCompleted(net::OK);
+}
+
+bool ProxyingURLLoaderFactory::InProgressRequest::ReadResponseBody(
+    mojo::ScopedDataPipeConsumerHandle body,
+    std::string* out_body) {
+  // Read the body into a string
+  base::span<const uint8_t> buffer;
+  MojoResult result = body->BeginReadData(MOJO_READ_DATA_FLAG_NONE, buffer);
+  if (result != MOJO_RESULT_OK)
+    return false;
+
+  if (buffer.empty()) {
+    // Empty body
+    *out_body = "";
+    return true;
+  }
+
+  out_body->assign(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+  result = body->EndReadData(buffer.size());
+  return result == MOJO_RESULT_OK;
+}
+
+void ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived(
+    const std::string& original_body,
+    int result) {
+  if (result != net::OK) {
+    OnRequestError(network::URLLoaderCompletionStatus(result));
+    return;
+  }
+
+  // Create a new data pipe to send the modified body to the client
+  mojo::ScopedDataPipeProducerHandle producer;
+  mojo::ScopedDataPipeConsumerHandle consumer;
+  MojoResult mojo_result = mojo::CreateDataPipe(
+      nullptr, producer, consumer);
+  if (mojo_result != MOJO_RESULT_OK) {
+    OnRequestError(network::URLLoaderCompletionStatus(net::ERR_FAILED));
+    return;
+  }
+
+  // Write the modified body to the data pipe
+  size_t bytes_written = 0;
+  // Create a span from the string's data in a safe way
+  auto data_span = base::as_bytes(base::span(original_body));
+  mojo_result = producer->WriteData(
+      data_span,
+      MOJO_WRITE_DATA_FLAG_NONE,
+      bytes_written);
+  
+  if (mojo_result != MOJO_RESULT_OK || bytes_written != original_body.size()) {
+    OnRequestError(network::URLLoaderCompletionStatus(net::ERR_FAILED));
+    return;
+  }
+
+  // Send the modified body to the client
+  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(consumer), std::nullopt);
+  ContinueToCompleted(net::OK);
+}
+
+void ProxyingURLLoaderFactory::InProgressRequest::ContinueToCompleted(
+    int error_code) {
+  if (error_code != net::OK) {
+    OnRequestError(network::URLLoaderCompletionStatus(error_code));
+    return;
+  }
+
+  // This is called after the response body has been processed and we're ready 
+  // to complete the request.
+  network::URLLoaderCompletionStatus status(net::OK);
+  factory_->web_request_api()->OnCompleted(&info_.value(), request_, net::OK);
 }
 
 ProxyingURLLoaderFactory::ProxyingURLLoaderFactory(

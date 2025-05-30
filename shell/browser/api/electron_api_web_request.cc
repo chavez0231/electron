@@ -296,6 +296,8 @@ struct WebRequest::BlockedRequest {
   std::string status_line;
   // Only used for onBeforeRequest.
   raw_ptr<GURL> new_url = nullptr;
+  // Only used for onResponseReceived.
+  raw_ptr<std::string> response_body = nullptr;
 };
 
 WebRequest::SimpleListenerInfo::SimpleListenerInfo(RequestFilter filter_,
@@ -333,6 +335,9 @@ gin::ObjectTemplateBuilder WebRequest::GetObjectTemplateBuilder(
       .SetMethod(
           "onHeadersReceived",
           &WebRequest::SetResponseListener<ResponseEvent::kOnHeadersReceived>)
+      .SetMethod(
+          "onResponseReceived",
+          &WebRequest::SetResponseListener<ResponseEvent::kOnResponseReceived>)
       .SetMethod("onSendHeaders",
                  &WebRequest::SetSimpleListener<SimpleEvent::kOnSendHeaders>)
       .SetMethod("onBeforeRedirect",
@@ -767,6 +772,85 @@ gin::Handle<WebRequest> WebRequest::From(
   if (!user_data)
     return {};
   return gin::CreateHandle(isolate, user_data->data.get());
+}
+
+int WebRequest::OnResponseReceived(extensions::WebRequestInfo* info,
+                                   const network::ResourceRequest& request,
+                                   net::CompletionOnceCallback callback,
+                                   std::string* response_body_param) {
+  int result = HandleOnResponseReceivedResponseEvent(info, request, std::move(callback), response_body_param);
+  if (result != net::ERR_IO_PENDING) {
+    // If we're not waiting for the callback, complete immediately
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), result));
+  }
+  return result;
+}
+
+int WebRequest::HandleOnResponseReceivedResponseEvent(
+    extensions::WebRequestInfo* request_info,
+    const network::ResourceRequest& request,
+    net::CompletionOnceCallback callback,
+    std::string* response_body_param) {
+  const auto iter = response_listeners_.find(ResponseEvent::kOnResponseReceived);
+  if (iter == std::end(response_listeners_))
+    return net::OK;
+
+  const auto& info = iter->second;
+  if (!info.filter.MatchesRequest(request_info))
+    return net::OK;
+
+  BlockedRequest blocked_request;
+  blocked_request.callback = std::move(callback);
+  blocked_request.response_body = response_body_param;
+  blocked_request.request = request_info;
+  blocked_requests_[request_info->id] = std::move(blocked_request);
+
+  v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
+  v8::HandleScope handle_scope(isolate);
+  gin_helper::Dictionary details(isolate, v8::Object::New(isolate));
+  FillDetails(&details, request_info, request);
+  
+  if (response_body_param) {
+    details.Set("responseBody", *response_body_param);
+  }
+
+  ResponseCallback response =
+      base::BindOnce(&WebRequest::OnResponseReceivedListenerResult,
+                     base::Unretained(this), request_info->id);
+  info.listener.Run(gin::ConvertToV8(isolate, details), std::move(response));
+  return net::ERR_IO_PENDING;
+}
+
+void WebRequest::OnResponseReceivedListenerResult(
+    uint64_t id,
+    v8::Local<v8::Value> response) {
+  const auto iter = blocked_requests_.find(id);
+  if (iter == std::end(blocked_requests_))
+    return;
+
+  auto& request = iter->second;
+
+  int result = net::OK;
+  if (response->IsObject()) {
+    v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
+    gin::Dictionary dict(isolate, response.As<v8::Object>());
+
+    bool cancel = false;
+    dict.Get("cancel", &cancel);
+    if (cancel) {
+      result = net::ERR_BLOCKED_BY_CLIENT;
+    } else if (request.response_body) {
+      std::string new_body;
+      if (dict.Get("responseBody", &new_body)) {
+        *request.response_body = std::move(new_body);
+      }
+    }
+  }
+
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(request.callback), result));
+  blocked_requests_.erase(iter);
 }
 
 }  // namespace electron::api

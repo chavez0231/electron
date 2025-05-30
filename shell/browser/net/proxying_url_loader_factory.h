@@ -116,6 +116,13 @@ class ProxyingURLLoaderFactory
                            const net::IPEndPoint& endpoint,
                            OnHeadersReceivedCallback callback) override;
 
+    // Methods for handling response body interception
+    void OnReceiveBody(mojo::ScopedDataPipeConsumerHandle body);
+    bool ReadResponseBody(mojo::ScopedDataPipeConsumerHandle body, 
+                         std::string* out_body);
+    void OnResponseBodyReceived(const std::string& original_body, int result);
+    void ContinueToCompleted(int error_code);
+
    private:
     // These two methods combined form the implementation of Restart().
     void UpdateRequestInfo();
