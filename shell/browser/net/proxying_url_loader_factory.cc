@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/string_split.h"
@@ -26,7 +27,6 @@
 #include "shell/common/options_switches.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/origin.h"
-#include "base/containers/span.h"
 
 namespace electron {
 
@@ -660,11 +660,11 @@ void ProxyingURLLoaderFactory::InProgressRequest::ContinueToResponseStarted(
   proxied_client_receiver_.Resume();
 
   factory_->web_request_api()->OnResponseStarted(&info_.value(), request_);
-  
+
   // First send the response header to the client
-  target_client_->OnReceiveResponse(current_response_.Clone(), 
-                                   std::move(current_body_),
-                                   std::move(current_cached_metadata_));
+  target_client_->OnReceiveResponse(current_response_.Clone(),
+                                    std::move(current_body_),
+                                    std::move(current_cached_metadata_));
 
   // Don't need to process the body as it's already sent with the response
   ContinueToCompleted(net::OK);
@@ -744,20 +744,17 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnRequestError(
 
 void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveBody(
     mojo::ScopedDataPipeConsumerHandle body) {
-  // If there's no client (renderer crashed, etc.), just resume.
   if (!target_client_) {
     ContinueToCompleted(net::OK);
     return;
   }
 
-  // If the WebRequest API has listeners for the onResponseReceived event,
-  // we need to buffer the response body, intercept it, potentially modify it,
-  // and then send it to the client.
+  // 如果 WebRequest API 有监听器，我们需要缓冲响应体
   if (factory_->web_request_api()->HasListener()) {
-    // Read the entire body into a string
+    // 读取整个响应体到字符串
     std::string response_body;
     if (ReadResponseBody(std::move(body), &response_body)) {
-      // Call the WebRequest API with the body
+      // 调用 WebRequest API
       auto callback = base::BindOnce(
           &ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived,
           weak_factory_.GetWeakPtr(), response_body);
@@ -766,79 +763,70 @@ void ProxyingURLLoaderFactory::InProgressRequest::OnReceiveBody(
           &info_.value(), request_, std::move(callback), &response_body);
 
       if (result == net::ERR_IO_PENDING) {
-        // The request is being intercepted, don't forward the body yet
+        // 请求被拦截，暂时不转发响应体
         return;
       } else if (result != net::OK) {
-        // An error occurred, cancel the request
+        // 发生错误，取消请求
         OnRequestError(network::URLLoaderCompletionStatus(result));
         return;
       } else {
-        // No interception occurred, or the interception completed synchronously
+        // 没有拦截发生，或者拦截同步完成
         OnResponseBodyReceived(response_body, net::OK);
         return;
       }
     }
   }
 
-  // Default behavior - just forward the body to the client
-  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(body), std::nullopt);
+  // 默认行为 - 直接转发响应体给客户端
+  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(body),
+                                    std::nullopt);
   ContinueToCompleted(net::OK);
 }
 
 bool ProxyingURLLoaderFactory::InProgressRequest::ReadResponseBody(
     mojo::ScopedDataPipeConsumerHandle body,
     std::string* out_body) {
-  // Read the body into a string
-  base::span<const uint8_t> buffer;
-  MojoResult result = body->BeginReadData(MOJO_READ_DATA_FLAG_NONE, buffer);
-  if (result != MOJO_RESULT_OK)
-    return false;
-
-  if (buffer.empty()) {
-    // Empty body
-    *out_body = "";
+  // 读取数据管道中的响应体
+  const void* buffer;
+  uint32_t num_bytes;
+  MojoResult result =
+      body->BeginReadData(&buffer, &num_bytes, MOJO_READ_DATA_FLAG_NONE);
+  if (result == MOJO_RESULT_OK) {
+    out_body->append(static_cast<const char*>(buffer), num_bytes);
+    body->EndReadData(num_bytes);
     return true;
   }
-
-  out_body->assign(reinterpret_cast<const char*>(buffer.data()), buffer.size());
-  result = body->EndReadData(buffer.size());
-  return result == MOJO_RESULT_OK;
+  return false;
 }
 
 void ProxyingURLLoaderFactory::InProgressRequest::OnResponseBodyReceived(
-    const std::string& original_body,
-    int result) {
-  if (result != net::OK) {
-    OnRequestError(network::URLLoaderCompletionStatus(result));
+    const std::string& response_body,
+    int error_code) {
+  if (error_code != net::OK) {
+    OnRequestError(network::URLLoaderCompletionStatus(error_code));
     return;
   }
 
-  // Create a new data pipe to send the modified body to the client
+  // 创建一个新的数据管道来发送修改后的响应体
   mojo::ScopedDataPipeProducerHandle producer;
   mojo::ScopedDataPipeConsumerHandle consumer;
-  MojoResult mojo_result = mojo::CreateDataPipe(
-      nullptr, producer, consumer);
-  if (mojo_result != MOJO_RESULT_OK) {
+  if (mojo::CreateDataPipe(nullptr, producer, consumer) != MOJO_RESULT_OK) {
     OnRequestError(network::URLLoaderCompletionStatus(net::ERR_FAILED));
     return;
   }
 
-  // Write the modified body to the data pipe
-  size_t bytes_written = 0;
-  // Create a span from the string's data in a safe way
-  auto data_span = base::as_bytes(base::span(original_body));
-  mojo_result = producer->WriteData(
-      data_span,
-      MOJO_WRITE_DATA_FLAG_NONE,
-      bytes_written);
-  
-  if (mojo_result != MOJO_RESULT_OK || bytes_written != original_body.size()) {
+  // 写入修改后的响应体
+  uint32_t bytes_written = response_body.size();
+  MojoResult result = producer->WriteData(response_body.data(), &bytes_written,
+                                          MOJO_WRITE_DATA_FLAG_ALL_OR_NONE);
+  if (result != MOJO_RESULT_OK) {
     OnRequestError(network::URLLoaderCompletionStatus(net::ERR_FAILED));
     return;
   }
 
-  // Send the modified body to the client
-  target_client_->OnReceiveResponse(current_response_.Clone(), std::move(consumer), std::nullopt);
+  // 发送响应给客户端
+  target_client_->OnReceiveResponse(current_response_.Clone(),
+                                    std::move(consumer), std::nullopt);
   ContinueToCompleted(net::OK);
 }
 
@@ -849,7 +837,7 @@ void ProxyingURLLoaderFactory::InProgressRequest::ContinueToCompleted(
     return;
   }
 
-  // This is called after the response body has been processed and we're ready 
+  // This is called after the response body has been processed and we're ready
   // to complete the request.
   network::URLLoaderCompletionStatus status(net::OK);
   factory_->web_request_api()->OnCompleted(&info_.value(), request_, net::OK);

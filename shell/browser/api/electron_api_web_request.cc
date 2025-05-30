@@ -4,6 +4,9 @@
 
 #include "shell/browser/api/electron_api_web_request.h"
 
+#include <chrono>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -778,7 +781,55 @@ int WebRequest::OnResponseReceived(extensions::WebRequestInfo* info,
                                    const network::ResourceRequest& request,
                                    net::CompletionOnceCallback callback,
                                    std::string* response_body_param) {
-  int result = HandleOnResponseReceivedResponseEvent(info, request, std::move(callback), response_body_param);
+  // 获取当前时间戳
+  auto now = std::chrono::system_clock::now();
+  auto now_time_t = std::chrono::system_clock::to_time_t(now);
+  auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now.time_since_epoch()) %
+                1000;
+
+  std::stringstream ss;
+  ss << std::put_time(std::localtime(&now_time_t), "%Y-%m-%d %H:%M:%S");
+  ss << '.' << std::setfill('0') << std::setw(3) << now_ms.count();
+
+  // 打开日志文件
+  std::ofstream log_file("D:/electron.log", std::ios::app);
+  if (log_file.is_open()) {
+    // 记录基本信息
+    log_file << "\n[" << ss.str() << "] 收到响应事件:\n";
+    log_file << "请求ID: " << info->id << "\n";
+    log_file << "URL: " << info->url << "\n";
+    log_file << "请求方法: " << info->method << "\n";
+    log_file << "资源类型: " << info->web_request_type << "\n";
+
+    // 记录请求头信息
+    log_file << "请求头信息:\n";
+    for (const auto& header : request.headers.GetHeaderVector()) {
+      log_file << "  " << header.key << ": " << header.value << "\n";
+    }
+
+    // 记录响应体信息
+    if (response_body_param) {
+      log_file << "响应体长度: " << response_body_param->length() << " 字节\n";
+      // 如果响应体不是太大，也记录内容
+      if (response_body_param->length() < 1024) {
+        log_file << "响应体内容: " << *response_body_param << "\n";
+      }
+    }
+
+    // 记录其他相关信息
+    log_file << "WebContents ID: " << info->web_contents_id << "\n";
+    log_file << "框架ID: " << info->frame_id << "\n";
+    log_file << "进程ID: " << info->process_id << "\n";
+    log_file << "渲染进程ID: " << info->render_process_id << "\n";
+    log_file << "渲染框架ID: " << info->render_frame_id << "\n";
+
+    log_file << "----------------------------------------\n";
+    log_file.close();
+  }
+
+  int result = HandleOnResponseReceivedResponseEvent(
+      info, request, std::move(callback), response_body_param);
   if (result != net::ERR_IO_PENDING) {
     // If we're not waiting for the callback, complete immediately
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -792,7 +843,8 @@ int WebRequest::HandleOnResponseReceivedResponseEvent(
     const network::ResourceRequest& request,
     net::CompletionOnceCallback callback,
     std::string* response_body_param) {
-  const auto iter = response_listeners_.find(ResponseEvent::kOnResponseReceived);
+  const auto iter =
+      response_listeners_.find(ResponseEvent::kOnResponseReceived);
   if (iter == std::end(response_listeners_))
     return net::OK;
 
@@ -810,7 +862,7 @@ int WebRequest::HandleOnResponseReceivedResponseEvent(
   v8::HandleScope handle_scope(isolate);
   gin_helper::Dictionary details(isolate, v8::Object::New(isolate));
   FillDetails(&details, request_info, request);
-  
+
   if (response_body_param) {
     details.Set("responseBody", *response_body_param);
   }
