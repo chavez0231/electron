@@ -13,6 +13,7 @@
 #include "shell/browser/ui/electron_menu_model.h"
 #include "shell/common/gin_helper/constructible.h"
 #include "shell/common/gin_helper/pinnable.h"
+#include "shell/common/gin_helper/wrappable.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 
 namespace gin {
@@ -24,7 +25,7 @@ namespace electron::api {
 class BaseWindow;
 class WebFrameMain;
 
-class Menu : public gin::Wrappable<Menu>,
+class Menu : public gin_helper::DeprecatedWrappable<Menu>,
              public gin_helper::EventEmitterMixin<Menu>,
              public gin_helper::Constructible<Menu>,
              public gin_helper::Pinnable<Menu>,
@@ -32,12 +33,12 @@ class Menu : public gin::Wrappable<Menu>,
              private ElectronMenuModel::Observer {
  public:
   // gin_helper::Constructible
-  static gin::Handle<Menu> New(gin::Arguments* args);
+  static gin_helper::Handle<Menu> New(gin::Arguments* args);
   static void FillObjectTemplate(v8::Isolate*, v8::Local<v8::ObjectTemplate>);
   static const char* GetClassName() { return "Menu"; }
 
-  // gin::Wrappable
-  static gin::WrapperInfo kWrapperInfo;
+  // gin_helper::Wrappable
+  static gin::DeprecatedWrapperInfo kWrapperInfo;
   const char* GetTypeName() override;
 
 #if BUILDFLAG(IS_MAC)

@@ -53,8 +53,8 @@ class NativeWindowViews : public NativeWindow,
 
   // NativeWindow:
   void SetContentView(views::View* view) override;
-  void CloseImpl() override;
-  void CloseImmediatelyImpl() override;
+  void Close() override;
+  void CloseImmediately() override;
   void Focus(bool focus) override;
   bool IsFocused() const override;
   void Show() override;
@@ -176,8 +176,13 @@ class NativeWindowViews : public NativeWindow,
 #endif
 
 #if BUILDFLAG(IS_WIN)
+  void SetAccentColor(
+      std::variant<std::monostate, bool, SkColor> accent_color) override;
+  std::variant<bool, std::string> GetAccentColor() const override;
+  void UpdateWindowAccentColor(bool active) override;
   TaskbarHost& taskbar_host() { return taskbar_host_; }
   void UpdateThickFrame();
+  void SetLayered();
 #endif
 
   SkColor overlay_button_color() const { return overlay_button_color_; }
@@ -317,6 +322,8 @@ class NativeWindowViews : public NativeWindow,
 
   // Whether the window is currently being moved.
   bool is_moving_ = false;
+
+  std::variant<std::monostate, bool, SkColor> accent_color_;
 
   std::optional<gfx::Rect> pending_bounds_change_;
 

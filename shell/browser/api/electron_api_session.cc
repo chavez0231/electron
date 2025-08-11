@@ -21,7 +21,7 @@
 #include "base/strings/string_util.h"
 #include "base/uuid.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/predictors/preconnect_manager.h"
+#include "chrome/browser/predictors/predictors_traffic_annotations.h"  // nogncheck
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/download/public/common/download_danger_type.h"
@@ -39,10 +39,11 @@
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager_delegate.h"
 #include "content/public/browser/network_service_instance.h"
+#include "content/public/browser/preconnect_manager.h"
+#include "content/public/browser/preconnect_request.h"
 #include "content/public/browser/storage_partition.h"
 #include "gin/arguments.h"
 #include "gin/converter.h"
-#include "gin/handle.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/completion_repeating_callback.h"
@@ -84,8 +85,10 @@
 #include "shell/common/gin_converters/time_converter.h"
 #include "shell/common/gin_converters/usb_protected_classes_converter.h"
 #include "shell/common/gin_converters/value_converter.h"
+#include "shell/common/gin_helper/cleaned_up_at_exit.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/object_template_builder.h"
 #include "shell/common/gin_helper/promise.h"
 #include "shell/common/node_includes.h"
@@ -198,9 +201,11 @@ std::vector<std::string> GetDataTypesFromMask(
 
 // Represents a task to clear browsing data for the `clearData` API method.
 //
-// This type manages its own lifetime, deleting itself once the task finishes
-// completely.
-class ClearDataTask {
+// This type manages its own lifetime,
+// 1) deleting itself once all the operations created by this task are
+// completed. 2) through gin_helper::CleanedUpAtExit, ensuring it's destroyed
+// before the node environment shuts down.
+class ClearDataTask : public gin_helper::CleanedUpAtExit {
  public:
   // Starts running a task. This function will return before the task is
   // finished, but will resolve or reject the |promise| when it finishes.
@@ -211,7 +216,7 @@ class ClearDataTask {
       std::vector<url::Origin> origins,
       BrowsingDataFilterBuilder::Mode filter_mode,
       BrowsingDataFilterBuilder::OriginMatchingMode origin_matching_mode) {
-    std::shared_ptr<ClearDataTask> task(new ClearDataTask(std::move(promise)));
+    auto* task = new ClearDataTask(std::move(promise));
 
     // This method counts as an operation. This is important so we can call
     // `OnOperationFinished` at the end of this method as a fallback if all the
@@ -255,42 +260,36 @@ class ClearDataTask {
     }
 
     // This static method counts as an operation.
-    task->OnOperationFinished(std::nullopt);
+    task->OnOperationFinished(nullptr, std::nullopt);
   }
 
  private:
   // An individual |content::BrowsingDataRemover::Remove...| operation as part
-  // of a full |ClearDataTask|. This class manages its own lifetime, cleaning
-  // itself up after the operation completes and notifies the task of the
-  // result.
+  // of a full |ClearDataTask|. This class is owned by ClearDataTask and cleaned
+  // up either when the operation completes or when ClearDataTask is destroyed.
   class ClearDataOperation : private BrowsingDataRemover::Observer {
    public:
-    static void Run(std::shared_ptr<ClearDataTask> task,
-                    BrowsingDataRemover* remover,
-                    BrowsingDataRemover::DataType data_type_mask,
-                    std::unique_ptr<BrowsingDataFilterBuilder> filter_builder) {
-      auto* operation = new ClearDataOperation(task, remover);
+    ClearDataOperation(ClearDataTask* task, BrowsingDataRemover* remover)
+        : task_(task) {
+      observation_.Observe(remover);
+    }
 
+    void Start(BrowsingDataRemover* remover,
+               BrowsingDataRemover::DataType data_type_mask,
+               std::unique_ptr<BrowsingDataFilterBuilder> filter_builder) {
       remover->RemoveWithFilterAndReply(base::Time::Min(), base::Time::Max(),
                                         data_type_mask, kClearOriginTypeAll,
-                                        std::move(filter_builder), operation);
+                                        std::move(filter_builder), this);
     }
 
     // BrowsingDataRemover::Observer:
     void OnBrowsingDataRemoverDone(
         BrowsingDataRemover::DataType failed_data_types) override {
-      task_->OnOperationFinished(failed_data_types);
-      delete this;
+      task_->OnOperationFinished(this, failed_data_types);
     }
 
    private:
-    ClearDataOperation(std::shared_ptr<ClearDataTask> task,
-                       BrowsingDataRemover* remover)
-        : task_(task) {
-      observation_.Observe(remover);
-    }
-
-    std::shared_ptr<ClearDataTask> task_;
+    raw_ptr<ClearDataTask> task_;
     base::ScopedObservation<BrowsingDataRemover, BrowsingDataRemover::Observer>
         observation_{this};
   };
@@ -299,24 +298,36 @@ class ClearDataTask {
       : promise_(std::move(promise)) {}
 
   static void StartOperation(
-      std::shared_ptr<ClearDataTask> task,
+      ClearDataTask* task,
       BrowsingDataRemover* remover,
       BrowsingDataRemover::DataType data_type_mask,
       std::unique_ptr<BrowsingDataFilterBuilder> filter_builder) {
     // Track this operation
     task->operations_running_ += 1;
 
-    ClearDataOperation::Run(task, remover, data_type_mask,
-                            std::move(filter_builder));
+    auto& operation = task->operations_.emplace_back(
+        std::make_unique<ClearDataOperation>(task, remover));
+    operation->Start(remover, data_type_mask, std::move(filter_builder));
   }
 
   void OnOperationFinished(
+      ClearDataOperation* operation,
       std::optional<BrowsingDataRemover::DataType> failed_data_types) {
     DCHECK_GT(operations_running_, 0);
     operations_running_ -= 1;
 
     if (failed_data_types.has_value()) {
       failed_data_types_ |= failed_data_types.value();
+    }
+
+    if (operation) {
+      operations_.erase(
+          std::remove_if(
+              operations_.begin(), operations_.end(),
+              [operation](const std::unique_ptr<ClearDataOperation>& op) {
+                return op.get() == operation;
+              }),
+          operations_.end());
     }
 
     // If this is the last operation, then the task is finished
@@ -346,11 +357,14 @@ class ClearDataTask {
 
       promise_.Reject(error);
     }
+
+    delete this;
   }
 
   int operations_running_ = 0;
   BrowsingDataRemover::DataType failed_data_types_ = 0ULL;
   gin_helper::Promise<void> promise_;
+  std::vector<std::unique_ptr<ClearDataOperation>> operations_;
 };
 
 base::Value::Dict createProxyConfig(ProxyPrefs::ProxyMode proxy_mode,
@@ -540,7 +554,7 @@ const void* kElectronApiSessionKey = &kElectronApiSessionKey;
 
 }  // namespace
 
-gin::WrapperInfo Session::kWrapperInfo = {gin::kEmbedderNativeGin};
+gin::DeprecatedWrapperInfo Session::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 Session::Session(v8::Isolate* isolate, ElectronBrowserContext* browser_context)
     : isolate_(isolate),
@@ -990,7 +1004,8 @@ bool Session::IsPersistent() {
 
 v8::Local<v8::Promise> Session::GetBlobData(v8::Isolate* isolate,
                                             const std::string& uuid) {
-  gin::Handle<DataPipeHolder> holder = DataPipeHolder::From(isolate, uuid);
+  gin_helper::Handle<DataPipeHolder> holder =
+      DataPipeHolder::From(isolate, uuid);
   if (holder.IsEmpty()) {
     gin_helper::Promise<v8::Local<v8::Value>> promise(isolate);
     promise.RejectWithErrorMessage("Could not get blob data handle");
@@ -1343,11 +1358,12 @@ static void StartPreconnectOnUI(ElectronBrowserContext* browser_context,
                                 const GURL& url,
                                 int num_sockets_to_preconnect) {
   url::Origin origin = url::Origin::Create(url);
-  std::vector<predictors::PreconnectRequest> requests = {
+  std::vector<content::PreconnectRequest> requests = {
       {url::Origin::Create(url), num_sockets_to_preconnect,
        net::NetworkAnonymizationKey::CreateSameSite(
            net::SchemefulSite(origin))}};
-  browser_context->GetPreconnectManager()->Start(url, requests);
+  browser_context->GetPreconnectManager()->Start(
+      url, requests, predictors::kLoadingPredictorPreconnectTrafficAnnotation);
 }
 
 void Session::Preconnect(const gin_helper::Dictionary& options,
@@ -1487,9 +1503,8 @@ v8::Local<v8::Value> Session::ClearData(gin_helper::ErrorThrower thrower,
 
         // Opaque origins cannot be used with this API
         if (origin.opaque()) {
-          thrower.ThrowError(
-              absl::StrFormat("Invalid origin: '%s'",
-                              origin_url.possibly_invalid_spec().c_str()));
+          thrower.ThrowError(absl::StrFormat(
+              "Invalid origin: '%s'", origin_url.possibly_invalid_spec()));
           return v8::Undefined(isolate);
         }
 
@@ -1648,15 +1663,15 @@ Session* Session::FromBrowserContext(content::BrowserContext* context) {
 }
 
 // static
-gin::Handle<Session> Session::CreateFrom(
+gin_helper::Handle<Session> Session::CreateFrom(
     v8::Isolate* isolate,
     ElectronBrowserContext* browser_context) {
   Session* existing = FromBrowserContext(browser_context);
   if (existing)
-    return gin::CreateHandle(isolate, existing);
+    return gin_helper::CreateHandle(isolate, existing);
 
   auto handle =
-      gin::CreateHandle(isolate, new Session(isolate, browser_context));
+      gin_helper::CreateHandle(isolate, new Session(isolate, browser_context));
 
   // The Sessions should never be garbage collected, since the common pattern is
   // to use partition strings, instead of using the Session object directly.
@@ -1674,9 +1689,9 @@ gin::Handle<Session> Session::CreateFrom(
 }
 
 // static
-gin::Handle<Session> Session::FromPartition(v8::Isolate* isolate,
-                                            const std::string& partition,
-                                            base::Value::Dict options) {
+gin_helper::Handle<Session> Session::FromPartition(v8::Isolate* isolate,
+                                                   const std::string& partition,
+                                                   base::Value::Dict options) {
   ElectronBrowserContext* browser_context;
   if (partition.empty()) {
     browser_context =
@@ -1693,7 +1708,7 @@ gin::Handle<Session> Session::FromPartition(v8::Isolate* isolate,
 }
 
 // static
-std::optional<gin::Handle<Session>> Session::FromPath(
+std::optional<gin_helper::Handle<Session>> Session::FromPath(
     v8::Isolate* isolate,
     const base::FilePath& path,
     base::Value::Dict options) {
@@ -1717,7 +1732,7 @@ std::optional<gin::Handle<Session>> Session::FromPath(
 }
 
 // static
-gin::Handle<Session> Session::New() {
+gin_helper::Handle<Session> Session::New() {
   gin_helper::ErrorThrower(JavascriptEnvironment::GetIsolate())
       .ThrowError("Session objects cannot be created with 'new'");
   return {};
@@ -1840,7 +1855,7 @@ v8::Local<v8::Value> FromPath(const base::FilePath& path,
   }
   base::Value::Dict options;
   args->GetNext(&options);
-  std::optional<gin::Handle<Session>> session_handle =
+  std::optional<gin_helper::Handle<Session>> session_handle =
       Session::FromPath(args->isolate(), path, std::move(options));
 
   if (session_handle)
@@ -1853,9 +1868,9 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  v8::Isolate* isolate = context->GetIsolate();
+  v8::Isolate* const isolate = electron::JavascriptEnvironment::GetIsolate();
   gin_helper::Dictionary dict(isolate, exports);
-  dict.Set("Session", Session::GetConstructor(context));
+  dict.Set("Session", Session::GetConstructor(isolate, context));
   dict.SetMethod("fromPartition", &FromPartition);
   dict.SetMethod("fromPath", &FromPath);
 }

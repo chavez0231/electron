@@ -13,18 +13,18 @@
 #include "base/json/json_writer.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/web_contents.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "gin/per_isolate_data.h"
 #include "shell/browser/javascript_environment.h"
 #include "shell/common/gin_converters/value_converter.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/promise.h"
 
 using content::DevToolsAgentHost;
 
 namespace electron::api {
 
-gin::WrapperInfo Debugger::kWrapperInfo = {gin::kEmbedderNativeGin};
+gin::DeprecatedWrapperInfo Debugger::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 Debugger::Debugger(v8::Isolate* isolate, content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents), web_contents_(web_contents) {}
@@ -81,7 +81,11 @@ void Debugger::DispatchProtocolMessage(DevToolsAgentHost* agent_host,
 
 void Debugger::RenderFrameHostChanged(content::RenderFrameHost* old_rfh,
                                       content::RenderFrameHost* new_rfh) {
-  if (agent_host_) {
+  // ConnectWebContents uses the primary main frame of the webContents,
+  // so if the new_rfh is not the primary main frame, we don't want to
+  // reconnect otherwise we'll end up trying to reconnect to a RenderFrameHost
+  // that already has a DevToolsAgentHost associated with it.
+  if (agent_host_ && new_rfh->IsInPrimaryMainFrame()) {
     agent_host_->DisconnectWebContents();
     auto* web_contents = content::WebContents::FromRenderFrameHost(new_rfh);
     agent_host_->ConnectWebContents(web_contents);
@@ -174,9 +178,10 @@ void Debugger::ClearPendingRequests() {
 }
 
 // static
-gin::Handle<Debugger> Debugger::Create(v8::Isolate* isolate,
-                                       content::WebContents* web_contents) {
-  return gin::CreateHandle(isolate, new Debugger(isolate, web_contents));
+gin_helper::Handle<Debugger> Debugger::Create(
+    v8::Isolate* isolate,
+    content::WebContents* web_contents) {
+  return gin_helper::CreateHandle(isolate, new Debugger(isolate, web_contents));
 }
 
 gin::ObjectTemplateBuilder Debugger::GetObjectTemplateBuilder(

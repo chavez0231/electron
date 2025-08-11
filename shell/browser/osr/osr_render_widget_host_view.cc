@@ -13,6 +13,7 @@
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -834,7 +835,7 @@ void OffScreenRenderWidgetHostView::SendMouseWheelEvent(
   mouse_wheel_phase_handler_.SendWheelEndForTouchpadScrollingIfNeeded(
       should_route_event);
   mouse_wheel_phase_handler_.AddPhaseIfNeededAndScheduleEndEvent(
-      mouse_wheel_event, false);
+      mouse_wheel_event, false, true);
 
   if (!IsPopupWidget()) {
     if (popup_host_view_) {

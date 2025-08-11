@@ -98,7 +98,7 @@ class BaseWindow : public gin_helper::TrackableObject<BaseWindow>,
 #endif
 
   // Public APIs of NativeWindow.
-  void SetContentView(gin::Handle<View> view);
+  void SetContentView(gin_helper::Handle<View> view);
   void Close();
   virtual void CloseImmediately();
   virtual void Focus();
@@ -196,7 +196,7 @@ class BaseWindow : public gin_helper::TrackableObject<BaseWindow>,
   virtual void SetVibrancy(v8::Isolate* isolate,
                            v8::Local<v8::Value> value,
                            gin_helper::Arguments* args);
-  void SetBackgroundMaterial(const std::string& vibrancy);
+  virtual void SetBackgroundMaterial(const std::string& material);
 
 #if BUILDFLAG(IS_MAC)
   std::string GetAlwaysOnTopLevel() const;
@@ -255,6 +255,8 @@ class BaseWindow : public gin_helper::TrackableObject<BaseWindow>,
   bool SetThumbnailToolTip(const std::string& tooltip);
   void SetAppDetails(const gin_helper::Dictionary& options);
   bool IsSnapped() const;
+  void SetAccentColor(gin_helper::Arguments* args);
+  v8::Local<v8::Value> GetAccentColor() const;
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)

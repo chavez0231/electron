@@ -18,6 +18,7 @@
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/id_map.h"
+#include "base/containers/map_util.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
 #include "base/no_destructor.h"
@@ -25,6 +26,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/current_thread.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/devtools/devtools_eye_dropper.h"
@@ -73,7 +75,6 @@
 #include "electron/mas.h"
 #include "gin/arguments.h"
 #include "gin/data_object_builder.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "gin/wrappable.h"
 #include "media/base/mime_util.h"
@@ -130,6 +131,7 @@
 #include "shell/common/gin_converters/value_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/locker.h"
 #include "shell/common/gin_helper/object_template_builder.h"
 #include "shell/common/gin_helper/promise.h"
@@ -146,6 +148,7 @@
 #include "third_party/blink/public/common/messaging/transferable_message_mojom_traits.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/common/peerconnection/webrtc_ip_handling_policy.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/messaging/transferable_message.mojom.h"
@@ -241,7 +244,7 @@ template <>
 struct Converter<WindowOpenDisposition> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
                                    WindowOpenDisposition val) {
-    std::string disposition = "other";
+    std::string_view disposition = "other";
     switch (val) {
       case WindowOpenDisposition::CURRENT_TAB:
         disposition = "default";
@@ -302,7 +305,7 @@ struct Converter<electron::api::WebContents::Type> {
   static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
                                    electron::api::WebContents::Type val) {
     using Type = electron::api::WebContents::Type;
-    std::string type;
+    std::string_view type;
     switch (val) {
       case Type::kBackgroundPage:
         type = "backgroundPage";
@@ -826,7 +829,7 @@ WebContents::WebContents(v8::Isolate* isolate,
 
   // Obtain the session.
   std::string partition;
-  gin::Handle<api::Session> session;
+  gin_helper::Handle<api::Session> session;
   if (options.Get("session", &session) && !session.IsEmpty()) {
   } else if (options.Get("partition", &partition)) {
     session = Session::FromPartition(isolate, partition);
@@ -863,9 +866,10 @@ WebContents::WebContents(v8::Isolate* isolate,
     // webPreferences does not have a transparent option, so if the window needs
     // to be transparent, that will be set at electron_api_browser_window.cc#L57
     // and we then need to pull it back out and check it here.
-    std::string background_color;
-    options.GetHidden(options::kBackgroundColor, &background_color);
-    bool transparent = ParseCSSColor(background_color) == SK_ColorTRANSPARENT;
+    std::string background_color_str;
+    options.GetHidden(options::kBackgroundColor, &background_color_str);
+    SkColor bc = ParseCSSColor(background_color_str).value_or(SK_ColorWHITE);
+    bool transparent = bc == SK_ColorTRANSPARENT;
 
     content::WebContents::CreateParams params(session->browser_context());
     auto* view = new OffScreenWebContentsView(
@@ -903,7 +907,7 @@ void WebContents::InitZoomController(content::WebContents* web_contents,
 void WebContents::InitWithSessionAndOptions(
     v8::Isolate* isolate,
     std::unique_ptr<content::WebContents> owned_web_contents,
-    gin::Handle<api::Session> session,
+    gin_helper::Handle<api::Session> session,
     const gin_helper::Dictionary& options) {
   Observe(owned_web_contents.get());
   InitWithWebContents(std::move(owned_web_contents), session->browser_context(),
@@ -1114,7 +1118,7 @@ void WebContents::OnDidAddMessageToConsole(
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
   v8::HandleScope handle_scope(isolate);
 
-  gin::Handle<gin_helper::internal::Event> event =
+  gin_helper::Handle<gin_helper::internal::Event> event =
       gin_helper::internal::Event::New(isolate);
   v8::Local<v8::Object> event_object = event.ToV8().As<v8::Object>();
 
@@ -1207,6 +1211,31 @@ content::WebContents* WebContents::CreateCustomWebContents(
   return nullptr;
 }
 
+void WebContents::MaybeOverrideCreateParamsForNewWindow(
+    content::WebContents::CreateParams* create_params) {
+  v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
+  v8::HandleScope handle_scope(isolate);
+  gin_helper::Dictionary dict;
+  gin::ConvertFromV8(isolate, pending_child_web_preferences_.Get(isolate),
+                     &dict);
+
+  v8::Local<v8::Value> use_offscreen;
+  if (dict.Get(options::kOffscreen, &use_offscreen)) {
+    bool is_offscreen =
+        use_offscreen->IsObject() ||
+        (use_offscreen->IsBoolean() &&
+         dict.Get(options::kOffscreen, &is_offscreen) && is_offscreen);
+
+    if (is_offscreen) {
+      auto* view = new OffScreenWebContentsView(
+          false, offscreen_use_shared_texture_,
+          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+      create_params->view = view;
+      create_params->delegate_view = view;
+    }
+  }
+}
+
 content::WebContents* WebContents::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
@@ -1220,9 +1249,13 @@ content::WebContents* WebContents::AddNewContents(
 
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
 
+  Type type = Type::kBrowserWindow;
+  auto* web_preferences = WebContentsPreferences::From(new_contents.get());
+  if (web_preferences && web_preferences->IsOffscreen())
+    type = Type::kOffScreen;
+
   v8::HandleScope handle_scope(isolate);
-  auto api_web_contents =
-      CreateAndTake(isolate, std::move(new_contents), Type::kBrowserWindow);
+  auto api_web_contents = CreateAndTake(isolate, std::move(new_contents), type);
 
   // We call RenderFrameCreated here as at this point the empty "about:blank"
   // render frame has already been created.  If the window never navigates again
@@ -1356,6 +1389,12 @@ bool WebContents::PlatformHandleKeyboardEvent(
 }
 #endif
 
+bool WebContents::PreHandleMouseEvent(content::WebContents* source,
+                                      const blink::WebMouseEvent& event) {
+  // |true| means that the event should be prevented.
+  return Emit("before-mouse-event", event);
+}
+
 content::KeyboardEventProcessingResult WebContents::PreHandleKeyboardEvent(
     content::WebContents* source,
     const input::NativeWebKeyboardEvent& event) {
@@ -1477,7 +1516,7 @@ void WebContents::RendererUnresponsive(
     base::RepeatingClosure hang_monitor_restarter) {
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
   v8::HandleScope handle_scope(isolate);
-  gin::Handle<gin_helper::internal::Event> event =
+  gin_helper::Handle<gin_helper::internal::Event> event =
       gin_helper::internal::Event::New(isolate);
   v8::Local<v8::Object> event_object = event.ToV8().As<v8::Object>();
   gin::Dictionary dict(isolate, event_object);
@@ -1662,7 +1701,7 @@ content::JavaScriptDialogManager* WebContents::GetJavaScriptDialogManager(
 void WebContents::OnAudioStateChanged(bool audible) {
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
   v8::HandleScope handle_scope(isolate);
-  gin::Handle<gin_helper::internal::Event> event =
+  gin_helper::Handle<gin_helper::internal::Event> event =
       gin_helper::internal::Event::New(isolate);
   v8::Local<v8::Object> event_object = event.ToV8().As<v8::Object>();
   gin::Dictionary dict(isolate, event_object);
@@ -1812,16 +1851,6 @@ void WebContents::PrimaryMainFrameRenderProcessGone(
   Emit("render-process-gone", details);
 }
 
-void WebContents::PluginCrashed(const base::FilePath& plugin_path,
-                                base::ProcessId plugin_pid) {
-#if BUILDFLAG(ENABLE_PLUGINS)
-  content::WebPluginInfo info;
-  auto* plugin_service = content::PluginService::GetInstance();
-  plugin_service->GetPluginInfoByPath(plugin_path, &info);
-  Emit("plugin-crashed", info.name, info.version);
-#endif  // BUILDFLAG(ENABLE_PLUGINS)
-}
-
 void WebContents::MediaStartedPlaying(const MediaPlayerInfo& video_type,
                                       const content::MediaPlayerId& id) {
   Emit("media-started-playing");
@@ -1940,7 +1969,7 @@ bool WebContents::EmitNavigationEvent(
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
   v8::HandleScope handle_scope(isolate);
 
-  gin::Handle<gin_helper::internal::Event> event =
+  gin_helper::Handle<gin_helper::internal::Event> event =
       gin_helper::internal::Event::New(isolate);
   v8::Local<v8::Object> event_object = event.ToV8().As<v8::Object>();
 
@@ -2398,6 +2427,13 @@ void WebContents::DownloadURL(const GURL& url, gin::Arguments* args) {
       content::DownloadRequestUtils::CreateDownloadForWebContentsMainFrame(
           web_contents(), url, MISSING_TRAFFIC_ANNOTATION));
   for (const auto& [name, value] : headers) {
+    if (base::ToLowerASCII(name) ==
+        base::ToLowerASCII(net::HttpRequestHeaders::kReferer)) {
+      // Setting a Referer header with HTTPS scheme while the download URL's
+      // scheme is HTTP might lead to download failure.
+      download_params->set_referrer(GURL(value));
+      continue;
+    }
     download_params->add_request_header(name, value);
   }
 
@@ -2740,15 +2776,17 @@ void WebContents::CloseDevTools() {
   if (type_ == Type::kRemote)
     return;
 
-  DCHECK(inspectable_web_contents_);
-  inspectable_web_contents_->CloseDevTools();
+  if (inspectable_web_contents_)
+    inspectable_web_contents_->CloseDevTools();
 }
 
 bool WebContents::IsDevToolsOpened() {
   if (type_ == Type::kRemote)
     return false;
 
-  DCHECK(inspectable_web_contents_);
+  if (!inspectable_web_contents_)
+    return false;
+
   return inspectable_web_contents_->IsDevToolsViewShowing();
 }
 
@@ -2756,19 +2794,24 @@ std::u16string WebContents::GetDevToolsTitle() {
   if (type_ == Type::kRemote)
     return {};
 
-  DCHECK(inspectable_web_contents_);
+  if (!inspectable_web_contents_)
+    return {};
+
   return inspectable_web_contents_->GetDevToolsTitle();
 }
 
 void WebContents::SetDevToolsTitle(const std::u16string& title) {
-  inspectable_web_contents_->SetDevToolsTitle(title);
+  if (inspectable_web_contents_)
+    inspectable_web_contents_->SetDevToolsTitle(title);
 }
 
 bool WebContents::IsDevToolsFocused() {
   if (type_ == Type::kRemote)
     return false;
 
-  DCHECK(inspectable_web_contents_);
+  if (!inspectable_web_contents_)
+    return false;
+
   return inspectable_web_contents_->GetView()->IsDevToolsViewFocused();
 }
 
@@ -2816,10 +2859,9 @@ void WebContents::InspectElement(int x, int y) {
   if (type_ == Type::kRemote)
     return;
 
-  if (!enable_devtools_)
+  if (!enable_devtools_ || !inspectable_web_contents_)
     return;
 
-  DCHECK(inspectable_web_contents_);
   if (!inspectable_web_contents_->GetDevToolsWebContents())
     OpenDevTools(nullptr);
   inspectable_web_contents_->InspectElement(x, y);
@@ -2945,12 +2987,15 @@ void OnGetDeviceNameToUse(base::WeakPtr<content::WebContents> web_contents,
     print_settings.Set(printing::kSettingDpiVertical, dpi.height());
   }
 
-  auto* print_view_manager =
-      PrintViewManagerElectron::FromWebContents(web_contents.get());
+  content::RenderFrameHost* rfh = GetRenderFrameHostToUse(web_contents.get());
+  if (!rfh)
+    return;
+
+  auto* print_view_manager = PrintViewManagerElectron::FromWebContents(
+      content::WebContents::FromRenderFrameHost(rfh));
   if (!print_view_manager)
     return;
 
-  content::RenderFrameHost* rfh = GetRenderFrameHostToUse(web_contents.get());
   print_view_manager->PrintNow(rfh, std::move(print_settings),
                                std::move(print_callback));
 }
@@ -2996,12 +3041,15 @@ void WebContents::Print(gin::Arguments* args) {
   }
 
   if (options.IsEmptyObject()) {
-    auto* print_view_manager =
-        PrintViewManagerElectron::FromWebContents(web_contents());
+    content::RenderFrameHost* rfh = GetRenderFrameHostToUse(web_contents());
+    if (!rfh)
+      return;
+
+    auto* print_view_manager = PrintViewManagerElectron::FromWebContents(
+        content::WebContents::FromRenderFrameHost(rfh));
     if (!print_view_manager)
       return;
 
-    content::RenderFrameHost* rfh = GetRenderFrameHostToUse(web_contents());
     print_view_manager->PrintNow(rfh, std::move(settings), std::move(callback));
     return;
   }
@@ -3554,10 +3602,20 @@ void WebContents::OnCursorChanged(const ui::Cursor& cursor) {
 }
 
 void WebContents::AttachToIframe(content::WebContents* embedder_web_contents,
-                                 int embedder_frame_id) {
+                                 std::string embedder_frame_token) {
+  auto token = base::Token::FromString(embedder_frame_token);
+  if (!token)
+    return;
+  auto unguessable_token =
+      base::UnguessableToken::Deserialize(token->high(), token->low());
+  if (!unguessable_token)
+    return;
+  auto frame_token = blink::LocalFrameToken(unguessable_token.value());
+
   attached_ = true;
-  if (guest_delegate_)
-    guest_delegate_->AttachToIframe(embedder_web_contents, embedder_frame_id);
+  if (guest_delegate_) {
+    guest_delegate_->AttachToIframe(embedder_web_contents, frame_token);
+  }
 }
 
 bool WebContents::IsOffScreen() const {
@@ -3570,7 +3628,7 @@ void WebContents::OnPaint(const gfx::Rect& dirty_rect,
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
   v8::HandleScope handle_scope(isolate);
 
-  gin::Handle<gin_helper::internal::Event> event =
+  gin_helper::Handle<gin_helper::internal::Event> event =
       gin_helper::internal::Event::New(isolate);
   v8::Local<v8::Object> event_object = event.ToV8().As<v8::Object>();
   gin_helper::Dictionary dict(isolate, event_object);
@@ -3996,30 +4054,35 @@ void WebContents::DevToolsSaveToFile(const std::string& url,
                                      const std::string& content,
                                      bool save_as,
                                      bool is_base64) {
-  base::FilePath path;
-  auto it = saved_files_.find(url);
-  if (it != saved_files_.end() && !save_as) {
-    path = it->second;
-  } else {
+  const base::FilePath* path = nullptr;
+
+  if (!save_as)
+    base::FindOrNull(saved_files_, url);
+
+  if (path == nullptr) {
     file_dialog::DialogSettings settings;
     settings.parent_window = owner_window();
     settings.force_detached = offscreen_;
     settings.title = url;
     settings.default_path = base::FilePath::FromUTF8Unsafe(url);
-    if (!file_dialog::ShowSaveDialogSync(settings, &path)) {
-      inspectable_web_contents_->CallClientFunction(
-          "DevToolsAPI", "canceledSaveURL", base::Value(url));
-      return;
+    if (auto new_path = file_dialog::ShowSaveDialogSync(settings)) {
+      auto [iter, _] = saved_files_.try_emplace(url, std::move(*new_path));
+      path = &iter->second;
     }
   }
 
-  saved_files_[url] = path;
+  if (path == nullptr) {
+    inspectable_web_contents_->CallClientFunction(
+        "DevToolsAPI", "canceledSaveURL", base::Value{url});
+    return;
+  }
+
   // Notify DevTools.
   inspectable_web_contents_->CallClientFunction(
-      "DevToolsAPI", "savedURL", base::Value(url),
-      base::Value(path.AsUTF8Unsafe()));
+      "DevToolsAPI", "savedURL", base::Value{url},
+      base::Value{path->AsUTF8Unsafe()});
   file_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&WriteToFile, path, content, is_base64));
+      FROM_HERE, base::BindOnce(&WriteToFile, *path, content, is_base64));
 }
 
 void WebContents::DevToolsAppendToFile(const std::string& url,
@@ -4480,11 +4543,11 @@ ElectronBrowserContext* WebContents::GetBrowserContext() const {
 }
 
 // static
-gin::Handle<WebContents> WebContents::New(
+gin_helper::Handle<WebContents> WebContents::New(
     v8::Isolate* isolate,
     const gin_helper::Dictionary& options) {
-  gin::Handle<WebContents> handle =
-      gin::CreateHandle(isolate, new WebContents(isolate, options));
+  gin_helper::Handle<WebContents> handle =
+      gin_helper::CreateHandle(isolate, new WebContents(isolate, options));
   v8::TryCatch try_catch(isolate);
   gin_helper::CallMethod(isolate, handle.get(), "_init");
   if (try_catch.HasCaught()) {
@@ -4494,11 +4557,11 @@ gin::Handle<WebContents> WebContents::New(
 }
 
 // static
-gin::Handle<WebContents> WebContents::CreateAndTake(
+gin_helper::Handle<WebContents> WebContents::CreateAndTake(
     v8::Isolate* isolate,
     std::unique_ptr<content::WebContents> web_contents,
     Type type) {
-  gin::Handle<WebContents> handle = gin::CreateHandle(
+  gin_helper::Handle<WebContents> handle = gin_helper::CreateHandle(
       isolate, new WebContents(isolate, std::move(web_contents), type));
   v8::TryCatch try_catch(isolate);
   gin_helper::CallMethod(isolate, handle.get(), "_init");
@@ -4518,7 +4581,7 @@ WebContents* WebContents::From(content::WebContents* web_contents) {
 }
 
 // static
-gin::Handle<WebContents> WebContents::FromOrCreate(
+gin_helper::Handle<WebContents> WebContents::FromOrCreate(
     v8::Isolate* isolate,
     content::WebContents* web_contents) {
   WebContents* api_web_contents = From(web_contents);
@@ -4530,15 +4593,15 @@ gin::Handle<WebContents> WebContents::FromOrCreate(
       node::errors::TriggerUncaughtException(isolate, try_catch);
     }
   }
-  return gin::CreateHandle(isolate, api_web_contents);
+  return gin_helper::CreateHandle(isolate, api_web_contents);
 }
 
 // static
-gin::Handle<WebContents> WebContents::CreateFromWebPreferences(
+gin_helper::Handle<WebContents> WebContents::CreateFromWebPreferences(
     v8::Isolate* isolate,
     const gin_helper::Dictionary& web_preferences) {
   // Check if webPreferences has |webContents| option.
-  gin::Handle<WebContents> web_contents;
+  gin_helper::Handle<WebContents> web_contents;
   if (web_preferences.GetHidden("webContents", &web_contents) &&
       !web_contents.IsEmpty()) {
     // Set webPreferences from options if using an existing webContents.
@@ -4582,7 +4645,8 @@ void WebContents::SetDisableDraggableRegions(bool disable) {
 }
 
 // static
-gin::WrapperInfo WebContents::kWrapperInfo = {gin::kEmbedderNativeGin};
+gin::DeprecatedWrapperInfo WebContents::kWrapperInfo = {
+    gin::kEmbedderNativeGin};
 
 }  // namespace electron::api
 
@@ -4592,37 +4656,38 @@ using electron::api::GetAllWebContents;
 using electron::api::WebContents;
 using electron::api::WebFrameMain;
 
-gin::Handle<WebContents> WebContentsFromID(v8::Isolate* isolate, int32_t id) {
+gin_helper::Handle<WebContents> WebContentsFromID(v8::Isolate* isolate,
+                                                  int32_t id) {
   WebContents* contents = WebContents::FromID(id);
-  return contents ? gin::CreateHandle(isolate, contents)
-                  : gin::Handle<WebContents>();
+  return contents ? gin_helper::CreateHandle(isolate, contents)
+                  : gin_helper::Handle<WebContents>();
 }
 
-gin::Handle<WebContents> WebContentsFromFrame(v8::Isolate* isolate,
-                                              WebFrameMain* web_frame) {
+gin_helper::Handle<WebContents> WebContentsFromFrame(v8::Isolate* isolate,
+                                                     WebFrameMain* web_frame) {
   content::RenderFrameHost* rfh = web_frame->render_frame_host();
   content::WebContents* source = content::WebContents::FromRenderFrameHost(rfh);
   WebContents* contents = WebContents::From(source);
-  return contents ? gin::CreateHandle(isolate, contents)
-                  : gin::Handle<WebContents>();
+  return contents ? gin_helper::CreateHandle(isolate, contents)
+                  : gin_helper::Handle<WebContents>();
 }
 
-gin::Handle<WebContents> WebContentsFromDevToolsTargetID(
+gin_helper::Handle<WebContents> WebContentsFromDevToolsTargetID(
     v8::Isolate* isolate,
     std::string target_id) {
   auto agent_host = content::DevToolsAgentHost::GetForId(target_id);
   WebContents* contents =
       agent_host ? WebContents::From(agent_host->GetWebContents()) : nullptr;
-  return contents ? gin::CreateHandle(isolate, contents)
-                  : gin::Handle<WebContents>();
+  return contents ? gin_helper::CreateHandle(isolate, contents)
+                  : gin_helper::Handle<WebContents>();
 }
 
-std::vector<gin::Handle<WebContents>> GetAllWebContentsAsV8(
+std::vector<gin_helper::Handle<WebContents>> GetAllWebContentsAsV8(
     v8::Isolate* isolate) {
-  std::vector<gin::Handle<WebContents>> list;
+  std::vector<gin_helper::Handle<WebContents>> list;
   for (auto iter = base::IDMap<WebContents*>::iterator(&GetAllWebContents());
        !iter.IsAtEnd(); iter.Advance()) {
-    list.push_back(gin::CreateHandle(isolate, iter.GetCurrentValue()));
+    list.push_back(gin_helper::CreateHandle(isolate, iter.GetCurrentValue()));
   }
   return list;
 }
@@ -4631,9 +4696,9 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  v8::Isolate* isolate = context->GetIsolate();
-  gin_helper::Dictionary dict(isolate, exports);
-  dict.Set("WebContents", WebContents::GetConstructor(context));
+  v8::Isolate* const isolate = electron::JavascriptEnvironment::GetIsolate();
+  gin_helper::Dictionary dict{isolate, exports};
+  dict.Set("WebContents", WebContents::GetConstructor(isolate, context));
   dict.SetMethod("fromId", &WebContentsFromID);
   dict.SetMethod("fromFrame", &WebContentsFromFrame);
   dict.SetMethod("fromDevToolsTargetId", &WebContentsFromDevToolsTargetID);

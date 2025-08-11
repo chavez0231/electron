@@ -55,6 +55,20 @@ describe('WebContentsView', () => {
     })).to.throw('options.webContents is already attached to a window');
   });
 
+  it('should throw an error when adding a destroyed child view to the parent view', async () => {
+    const browserWindow = new BrowserWindow();
+
+    const webContentsView = new WebContentsView();
+    webContentsView.webContents.loadURL('about:blank');
+    webContentsView.webContents.destroy();
+
+    const destroyed = once(webContentsView.webContents, 'destroyed');
+    await destroyed;
+    expect(() => browserWindow.contentView.addChildView(webContentsView)).to.throw(
+      'Can\'t add a destroyed child view to a parent view'
+    );
+  });
+
   it('should throw error when created with already attached webContents to other WebContentsView', () => {
     const browserWindow = new BrowserWindow();
 
@@ -151,6 +165,26 @@ describe('WebContentsView', () => {
       triggerGCByAllocation();
       done();
     });
+  });
+
+  it('does not crash when closed via window.close()', async () => {
+    const bw = new BrowserWindow();
+    const wcv = new WebContentsView();
+
+    await bw.loadURL('data:text/html,<h1>Main Window</h1>');
+    bw.contentView.addChildView(wcv);
+
+    const dto = new Promise<boolean>((resolve) => {
+      wcv.webContents.on('blur', () => {
+        const devToolsOpen = wcv.webContents.isDevToolsOpened();
+        resolve(devToolsOpen);
+      });
+    });
+
+    wcv.webContents.loadURL('data:text/html,<script>window.close()</script>');
+
+    const open = await dto;
+    expect(open).to.be.false();
   });
 
   it('can be fullscreened', async () => {

@@ -11,8 +11,8 @@
 #include "base/values.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "gin/wrappable.h"
 #include "shell/browser/event_emitter_mixin.h"
+#include "shell/common/gin_helper/wrappable.h"
 
 namespace content {
 class DevToolsAgentHost;
@@ -32,16 +32,17 @@ class Promise;
 
 namespace electron::api {
 
-class Debugger final : public gin::Wrappable<Debugger>,
+class Debugger final : public gin_helper::DeprecatedWrappable<Debugger>,
                        public gin_helper::EventEmitterMixin<Debugger>,
                        public content::DevToolsAgentHostClient,
                        private content::WebContentsObserver {
  public:
-  static gin::Handle<Debugger> Create(v8::Isolate* isolate,
-                                      content::WebContents* web_contents);
+  static gin_helper::Handle<Debugger> Create(
+      v8::Isolate* isolate,
+      content::WebContents* web_contents);
 
-  // gin::Wrappable
-  static gin::WrapperInfo kWrapperInfo;
+  // gin_helper::Wrappable
+  static gin::DeprecatedWrapperInfo kWrapperInfo;
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
       v8::Isolate* isolate) override;
   const char* GetTypeName() override;

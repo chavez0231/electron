@@ -20,8 +20,8 @@ runs:
       echo "GIT_CACHE_PATH=$(pwd)/git-cache" >> $GITHUB_ENV
   - name: Install Dependencies
     uses: ./src/electron/.github/actions/install-dependencies
-  - name: Set Chromium Git Helper
-    uses: ./src/electron/.github/actions/set-chromium-git-helper
+  - name: Set Chromium Git Cookie
+    uses: ./src/electron/.github/actions/set-chromium-cookie
   - name: Install Build Tools
     uses: ./src/electron/.github/actions/install-build-tools
   - name: Generate DEPS Hash
@@ -40,10 +40,10 @@ runs:
     if: ${{ inputs.generate-sas-token == 'true' }}
     shell: bash
     run: |
-      curl --unix-socket /var/run/sas/sas.sock --fail "http://foo/$CACHE_FILE?platform=${{ inputs.target-platform }}" > sas-token
+      curl --unix-socket /var/run/sas/sas.sock --fail "http://foo/$CACHE_FILE?platform=${{ inputs.target-platform }}&getAccountName=true" > sas-token
   - name: Save SAS Key
     if: ${{ inputs.generate-sas-token == 'true' }}
-    uses: actions/cache/save@d4323d4df104b026a6aa633fdb11d772146be0bf
+    uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
     with:
       path: sas-token
       key: sas-key-${{ inputs.target-platform }}-${{ github.run_number }}-${{ github.run_attempt }}
@@ -83,6 +83,18 @@ runs:
   - name: Add patch conflict problem matcher
     shell: bash
     run: echo "::add-matcher::src/electron/.github/problem-matchers/patch-conflict.json"
+  - name: Restore gitcache
+    if: steps.check-cache.outputs.cache_exists == 'false'
+    shell: bash
+    run: |
+      GIT_CACHE_TAR="$CACHE_DRIVE/gitcache.tar"
+      if [ ! -f "$GIT_CACHE_TAR" ]; then
+        echo "Git cache tar file does not exist, skipping restore"
+        exit 0
+      fi
+      echo "Restoring git cache from $GIT_CACHE_TAR to $GIT_CACHE_PATH"
+      mkdir -p $GIT_CACHE_PATH
+      tar -xf $GIT_CACHE_TAR -C $GIT_CACHE_PATH
   - name: Gclient Sync
     if: steps.check-cache.outputs.cache_exists == 'false'
     shell: bash
@@ -105,12 +117,7 @@ runs:
         git update-index --refresh || true
         if ! git diff-index --quiet HEAD --; then
           # There are changes to the patches. Make a git commit with the updated patches
-          git add patches
-          GIT_COMMITTER_NAME="PatchUp" GIT_COMMITTER_EMAIL="73610968+patchup[bot]@users.noreply.github.com" git commit -m "chore: update patches" --author="PatchUp <73610968+patchup[bot]@users.noreply.github.com>"
-          # Export it
-          mkdir -p ../../patches
-          git format-patch -1 --stdout --keep-subject --no-stat --full-index > ../../patches/update-patches.patch
-          if node ./script/push-patch.js; then
+          if node ./script/patch-up.js; then
             echo
             echo "======================================================================"
             echo "Changes to the patches when applying, we have auto-pushed the diff to the current branch"
@@ -118,6 +125,11 @@ runs:
             echo "======================================================================"
             exit 1
           else
+            git add patches
+            GIT_COMMITTER_NAME="PatchUp" GIT_COMMITTER_EMAIL="73610968+patchup[bot]@users.noreply.github.com" git commit -m "chore: update patches" --author="PatchUp <73610968+patchup[bot]@users.noreply.github.com>"
+            # Export it
+            mkdir -p ../../patches
+            git format-patch -1 --stdout --keep-subject --no-stat --full-index > ../../patches/update-patches.patch
             echo
             echo "======================================================================"
             echo "There were changes to the patches when applying."

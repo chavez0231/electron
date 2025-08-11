@@ -18,6 +18,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback_helpers.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/system/sys_info.h"
 #include "base/values.h"
@@ -40,7 +41,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "crypto/crypto_buildflags.h"
 #include "electron/mas.h"
-#include "gin/handle.h"
 #include "media/audio/audio_manager.h"
 #include "net/dns/public/dns_over_https_config.h"
 #include "net/dns/public/dns_over_https_server_config.h"
@@ -75,6 +75,7 @@
 #include "shell/common/gin_converters/value_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/object_template_builder.h"
 #include "shell/common/language_util.h"
 #include "shell/common/node_includes.h"
@@ -364,7 +365,7 @@ struct Converter<net::SecureDnsMode> {
 
 namespace electron::api {
 
-gin::WrapperInfo App::kWrapperInfo = {gin::kEmbedderNativeGin};
+gin::DeprecatedWrapperInfo App::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 namespace {
 
@@ -382,6 +383,9 @@ int GetPathConstant(std::string_view name) {
   // clang-format off
   constexpr auto Lookup = base::MakeFixedFlatMap<std::string_view, int>({
       {"appData", DIR_APP_DATA},
+#if !BUILDFLAG(IS_MAC)
+      {"assets", base::DIR_ASSETS},
+#endif
 #if BUILDFLAG(IS_POSIX)
       {"cache", base::DIR_CACHE},
 #else
@@ -1697,8 +1701,8 @@ App* App::Get() {
 }
 
 // static
-gin::Handle<App> App::Create(v8::Isolate* isolate) {
-  return gin::CreateHandle(isolate, Get());
+gin_helper::Handle<App> App::Create(v8::Isolate* isolate) {
+  return gin_helper::CreateHandle(isolate, Get());
 }
 
 gin::ObjectTemplateBuilder App::GetObjectTemplateBuilder(v8::Isolate* isolate) {
@@ -1719,6 +1723,8 @@ gin::ObjectTemplateBuilder App::GetObjectTemplateBuilder(v8::Isolate* isolate) {
                  base::BindRepeating(&Browser::AddRecentDocument, browser))
       .SetMethod("clearRecentDocuments",
                  base::BindRepeating(&Browser::ClearRecentDocuments, browser))
+      .SetMethod("getRecentDocuments",
+                 base::BindRepeating(&Browser::GetRecentDocuments, browser))
 #if BUILDFLAG(IS_WIN)
       .SetMethod("setAppUserModelId",
                  base::BindRepeating(&Browser::SetAppUserModelID, browser))
@@ -1855,8 +1861,8 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  v8::Isolate* isolate = context->GetIsolate();
-  gin_helper::Dictionary dict(isolate, exports);
+  v8::Isolate* const isolate = electron::JavascriptEnvironment::GetIsolate();
+  gin_helper::Dictionary dict{isolate, exports};
   dict.Set("app", electron::api::App::Create(isolate));
 }
 

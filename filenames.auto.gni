@@ -1,7 +1,6 @@
 # THIS FILE IS AUTO-GENERATED, PLEASE DO NOT EDIT BY HAND
 auto_filenames = {
   api_docs = [
-    "docs/api/accelerator.md",
     "docs/api/app.md",
     "docs/api/auto-updater.md",
     "docs/api/base-window.md",
@@ -83,6 +82,7 @@ auto_filenames = {
     "docs/api/structures/browser-window-options.md",
     "docs/api/structures/certificate-principal.md",
     "docs/api/structures/certificate.md",
+    "docs/api/structures/color-space.md",
     "docs/api/structures/cookie.md",
     "docs/api/structures/cpu-usage.md",
     "docs/api/structures/crash-report.md",
@@ -168,6 +168,7 @@ auto_filenames = {
   sandbox_bundle_deps = [
     "lib/common/api/native-image.ts",
     "lib/common/define-properties.ts",
+    "lib/common/deprecate.ts",
     "lib/common/ipc-messages.ts",
     "lib/common/web-view-methods.ts",
     "lib/common/webpack-globals-provider.ts",
@@ -299,6 +300,7 @@ auto_filenames = {
     "lib/common/api/native-image.ts",
     "lib/common/api/shell.ts",
     "lib/common/define-properties.ts",
+    "lib/common/deprecate.ts",
     "lib/common/init.ts",
     "lib/common/ipc-messages.ts",
     "lib/common/web-view-methods.ts",
@@ -339,6 +341,7 @@ auto_filenames = {
     "lib/common/api/native-image.ts",
     "lib/common/api/shell.ts",
     "lib/common/define-properties.ts",
+    "lib/common/deprecate.ts",
     "lib/common/init.ts",
     "lib/common/ipc-messages.ts",
     "lib/common/webpack-provider.ts",

@@ -51,10 +51,11 @@ void EmitDeprecationWarning(std::string_view warning_msg,
 // JS code run with this method can assume that their top-level
 // declarations won't affect the global scope.
 v8::MaybeLocal<v8::Value> CompileAndCall(
+    v8::Isolate* isolate,
     v8::Local<v8::Context> context,
     const char* id,
-    std::vector<v8::Local<v8::String>>* parameters,
-    std::vector<v8::Local<v8::Value>>* arguments);
+    v8::LocalVector<v8::String>* parameters,
+    v8::LocalVector<v8::Value>* arguments);
 
 // Wrapper for node::CreateEnvironment that logs failure
 node::Environment* CreateEnvironment(v8::Isolate* isolate,

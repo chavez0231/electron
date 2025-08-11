@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 
 #include "base/win/atl.h"  // Must be before UIAutomationCore.h
+#include "base/win/registry.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/windows_version.h"
 #include "content/public/browser/browser_accessibility_state.h"
@@ -15,7 +16,9 @@
 #include "shell/browser/native_window_views.h"
 #include "shell/browser/ui/views/root_view.h"
 #include "shell/browser/ui/views/win_frame_view.h"
+#include "shell/common/color_util.h"
 #include "shell/common/electron_constants.h"
+#include "skia/ext/skia_utils_win.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/resize_utils.h"
@@ -27,6 +30,38 @@
 namespace electron {
 
 namespace {
+
+void SetWindowBorderAndCaptionColor(HWND hwnd, COLORREF color) {
+  if (base::win::GetVersion() < base::win::Version::WIN11)
+    return;
+
+  HRESULT result =
+      DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &color, sizeof(color));
+
+  if (FAILED(result))
+    LOG(WARNING) << "Failed to set caption color";
+
+  result =
+      DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color, sizeof(color));
+
+  if (FAILED(result))
+    LOG(WARNING) << "Failed to set border color";
+}
+
+bool IsAccentColorOnTitleBarsEnabled() {
+  base::win::RegKey key;
+  if (key.Open(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\DWM",
+               KEY_READ) != ERROR_SUCCESS) {
+    return false;
+  }
+
+  DWORD enabled = 0;
+  if (key.ReadValueDW(L"ColorPrevalence", &enabled) != ERROR_SUCCESS) {
+    return false;
+  }
+
+  return enabled != 0;
+}
 
 // Convert Win32 WM_QUERYENDSESSIONS to strings.
 const std::vector<std::string> EndSessionToStringVec(LPARAM end_session_id) {
@@ -450,6 +485,19 @@ bool NativeWindowViews::PreHandleMSG(UINT message,
       }
       return false;
     }
+    case WM_DWMCOLORIZATIONCOLORCHANGED: {
+      UpdateWindowAccentColor(IsActive());
+      return false;
+    }
+    case WM_SETTINGCHANGE: {
+      if (l_param) {
+        const wchar_t* setting_name = reinterpret_cast<const wchar_t*>(l_param);
+        std::wstring setting_str(setting_name);
+        if (setting_str == L"ImmersiveColorSet")
+          UpdateWindowAccentColor(IsActive());
+      }
+      return false;
+    }
     default: {
       return false;
     }
@@ -506,6 +554,75 @@ void NativeWindowViews::HandleSizeEvent(WPARAM w_param, LPARAM l_param) {
       ResetWindowControls();
       break;
     }
+  }
+}
+
+void NativeWindowViews::UpdateWindowAccentColor(bool active) {
+  if (base::win::GetVersion() < base::win::Version::WIN11)
+    return;
+
+  std::optional<COLORREF> border_color;
+  bool should_apply_accent = false;
+
+  if (std::holds_alternative<SkColor>(accent_color_)) {
+    // If the user has explicitly set an accent color, use it
+    // regardless of whether the system accent color is enabled.
+    SkColor color = std::get<SkColor>(accent_color_);
+    border_color =
+        RGB(SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
+    should_apply_accent = true;
+  } else if (std::holds_alternative<bool>(accent_color_)) {
+    // Allow the user to optionally force system color on/off.
+    should_apply_accent = std::get<bool>(accent_color_);
+  } else if (std::holds_alternative<std::monostate>(accent_color_)) {
+    // If no explicit color was set, default to the system accent color.
+    should_apply_accent = IsAccentColorOnTitleBarsEnabled() && active;
+  }
+
+  // Use system accent color as fallback if no explicit color was set.
+  if (!border_color.has_value() && should_apply_accent) {
+    std::optional<DWORD> system_accent_color = GetSystemAccentColor();
+    if (system_accent_color.has_value()) {
+      border_color = RGB(GetRValue(system_accent_color.value()),
+                         GetGValue(system_accent_color.value()),
+                         GetBValue(system_accent_color.value()));
+    }
+  }
+
+  COLORREF final_color = border_color.value_or(DWMWA_COLOR_DEFAULT);
+  SetWindowBorderAndCaptionColor(GetAcceleratedWidget(), final_color);
+}
+
+void NativeWindowViews::SetAccentColor(
+    std::variant<std::monostate, bool, SkColor> accent_color) {
+  accent_color_ = accent_color;
+}
+
+/*
+ * Returns the window's accent color, per the following heuristic:
+ *
+ * - If |accent_color_| is an SkColor, return that color as a hex string.
+ * - If |accent_color_| is true, return the system accent color as a hex string.
+ * - If |accent_color_| is false, return false.
+ * - Otherwise, return the system accent color as a hex string.
+ */
+std::variant<bool, std::string> NativeWindowViews::GetAccentColor() const {
+  std::optional<DWORD> system_color = GetSystemAccentColor();
+
+  if (std::holds_alternative<SkColor>(accent_color_)) {
+    return ToRGBHex(std::get<SkColor>(accent_color_));
+  } else if (std::holds_alternative<bool>(accent_color_)) {
+    if (std::get<bool>(accent_color_)) {
+      if (!system_color.has_value())
+        return false;
+      return ToRGBHex(skia::COLORREFToSkColor(system_color.value()));
+    } else {
+      return false;
+    }
+  } else {
+    if (!system_color.has_value())
+      return false;
+    return ToRGBHex(skia::COLORREFToSkColor(system_color.value()));
   }
 }
 

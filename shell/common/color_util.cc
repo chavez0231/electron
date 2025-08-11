@@ -10,6 +10,10 @@
 #include "content/public/common/color_parser.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 
+#if BUILDFLAG(IS_WIN)
+#include <dwmapi.h>
+#endif
+
 namespace {
 
 bool IsHexFormatWithAlpha(const std::string& str) {
@@ -28,7 +32,7 @@ bool IsHexFormatWithAlpha(const std::string& str) {
 
 namespace electron {
 
-SkColor ParseCSSColor(const std::string& color_string) {
+std::optional<SkColor> ParseCSSColor(const std::string& color_string) {
   // ParseCssColorString expects RGBA and we historically use ARGB
   // so we need to convert before passing to ParseCssColorString.
   std::string converted_color_str;
@@ -42,7 +46,7 @@ SkColor ParseCSSColor(const std::string& color_string) {
 
   SkColor color;
   if (!content::ParseCssColorString(converted_color_str, &color))
-    color = SK_ColorWHITE;
+    return std::nullopt;
 
   return color;
 }
@@ -61,5 +65,16 @@ std::string ToRGBAHex(SkColor color, bool include_hash) {
   }
   return color_str;
 }
+
+#if BUILDFLAG(IS_WIN)
+std::optional<DWORD> GetSystemAccentColor() {
+  DWORD color = 0;
+  BOOL opaque = FALSE;
+
+  if (FAILED(DwmGetColorizationColor(&color, &opaque)))
+    return std::nullopt;
+  return color;
+}
+#endif
 
 }  // namespace electron

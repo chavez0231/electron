@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/containers/unique_ptr_adapters.h"
+#include "base/notimplemented.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
@@ -133,7 +134,7 @@ api::Session* ElectronApiSWIPCHandlerImpl::GetSession() {
   return api::Session::FromBrowserContext(GetBrowserContext());
 }
 
-gin::Handle<gin_helper::internal::Event>
+gin_helper::Handle<gin_helper::internal::Event>
 ElectronApiSWIPCHandlerImpl::MakeIPCEvent(
     v8::Isolate* isolate,
     api::Session* session,
@@ -148,7 +149,7 @@ ElectronApiSWIPCHandlerImpl::MakeIPCEvent(
     return {};
   }
 
-  gin::Handle<gin_helper::internal::Event> event =
+  gin_helper::Handle<gin_helper::internal::Event> event =
       gin_helper::internal::Event::New(isolate);
   v8::Local<v8::Object> event_object = event.ToV8().As<v8::Object>();
 

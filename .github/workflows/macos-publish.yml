@@ -6,7 +6,7 @@ on:
       build-image-sha:
         type: string
         description: 'SHA for electron/build image'
-        default: '424eedbf277ad9749ffa9219068aa72ed4a5e373'
+        default: '933c7d6ff6802706875270bec2e3c891cf8add3f'
         required: true
       upload-to-storage:
         description: 'Uploads to Azure storage'
@@ -20,7 +20,7 @@ on:
 
 jobs:
   checkout-macos:
-    runs-on: electron-arc-linux-amd64-32core
+    runs-on: electron-arc-centralus-linux-amd64-32core
     container:
       image: ghcr.io/electron/build:${{ inputs.build-image-sha }}
       options: --user root
@@ -28,8 +28,7 @@ jobs:
         - /mnt/cross-instance-cache:/mnt/cross-instance-cache
         - /var/run/sas:/var/run/sas
     env:
-      CHROMIUM_GIT_AUTH: ${{ secrets.CHROMIUM_GIT_AUTH }}
-      CHROMIUM_GIT_USER: ${{ secrets.CHROMIUM_GIT_USER }}
+      CHROMIUM_GIT_COOKIE: ${{ secrets.CHROMIUM_GIT_COOKIE }}
       GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac'
     steps:
     - name: Checkout Electron

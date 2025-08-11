@@ -16,66 +16,11 @@ making three primary changes to Blink:
     * Modifies graphics to handle smooth `ContouredRect`s, delegating to
       `//electron/shell/renderer/electron_smooth_round_rect`.
 
-3. Adds a renderer preference / web setting:
+3. Adds a renderer feature:
     * Controls whether the CSS rule is available.
-    * Mostly simple "plumbing" for the setting through blink.
 
-diff --git a/third_party/blink/common/renderer_preferences/renderer_preferences_mojom_traits.cc b/third_party/blink/common/renderer_preferences/renderer_preferences_mojom_traits.cc
-index c13dfd7f20e6f281f51ae373ceebeb86104c5cd9..fac89df9f23f3f098096d2a07a07e623b1067270 100644
---- a/third_party/blink/common/renderer_preferences/renderer_preferences_mojom_traits.cc
-+++ b/third_party/blink/common/renderer_preferences/renderer_preferences_mojom_traits.cc
-@@ -128,6 +128,8 @@ bool StructTraits<blink::mojom::RendererPreferencesDataView,
-     return false;
-   }
- 
-+  out->electron_corner_smoothing_css = data.electron_corner_smoothing_css();
-+
-   out->canvas_noise_token = data.canvas_noise_token();
- 
-   out->view_source_line_wrap_enabled = data.view_source_line_wrap_enabled();
-diff --git a/third_party/blink/public/common/renderer_preferences/renderer_preferences.h b/third_party/blink/public/common/renderer_preferences/renderer_preferences.h
-index 75acd696a5258e52f5c17b88559dfb3f6373c669..34b5ed725702dca72c383c1def08fdb835f7fa6b 100644
---- a/third_party/blink/public/common/renderer_preferences/renderer_preferences.h
-+++ b/third_party/blink/public/common/renderer_preferences/renderer_preferences.h
-@@ -91,6 +91,7 @@ struct BLINK_COMMON_EXPORT RendererPreferences {
-   bool caret_browsing_enabled{false};
-   bool uses_platform_autofill{false};
-   std::vector<uint16_t> explicitly_allowed_network_ports;
-+  bool electron_corner_smoothing_css{true};
-   uint64_t canvas_noise_token{0};
-   // The default value must be false to avoid performance problems on very large
-   // source pages.
-diff --git a/third_party/blink/public/common/renderer_preferences/renderer_preferences_mojom_traits.h b/third_party/blink/public/common/renderer_preferences/renderer_preferences_mojom_traits.h
-index defe40d7091cb4ba4b099a22aeaee71f78ff5e77..e8326fa7a3c45c08c7d9250edd52a6d73fcc3ff9 100644
---- a/third_party/blink/public/common/renderer_preferences/renderer_preferences_mojom_traits.h
-+++ b/third_party/blink/public/common/renderer_preferences/renderer_preferences_mojom_traits.h
-@@ -275,6 +275,11 @@ struct BLINK_COMMON_EXPORT
-     return data.explicitly_allowed_network_ports;
-   }
- 
-+  static const bool& electron_corner_smoothing_css(
-+      const ::blink::RendererPreferences& data) {
-+    return data.electron_corner_smoothing_css;
-+  }
-+
-   static const uint64_t& canvas_noise_token(
-       const ::blink::RendererPreferences& data) {
-     return data.canvas_noise_token;
-diff --git a/third_party/blink/public/mojom/renderer_preferences.mojom b/third_party/blink/public/mojom/renderer_preferences.mojom
-index f8361faf6151210d65a597562c533aaa0a5235df..328238c34a9381fbbeb5970af3de721c8412104e 100644
---- a/third_party/blink/public/mojom/renderer_preferences.mojom
-+++ b/third_party/blink/public/mojom/renderer_preferences.mojom
-@@ -202,6 +202,8 @@ struct RendererPreferences {
- 
-   array<uint16> explicitly_allowed_network_ports;
- 
-+  bool electron_corner_smoothing_css;
-+
-   // A randomized 64 bit token that is generated per browser session,
-   // used for canvas noising.
-   uint64 canvas_noise_token = 0;
 diff --git a/third_party/blink/public/mojom/use_counter/metrics/css_property_id.mojom b/third_party/blink/public/mojom/use_counter/metrics/css_property_id.mojom
-index 32e70a4fa70ac2fc41d95813590fe9a7120eecde..54d292d737748302fa0369b73d876d84f1fec1d4 100644
+index bb284c62d1d0dcd693bcb092044e6723bb339258..3c754cf37c18d0d17dc27e184ba5e8c5ebf8bdae 100644
 --- a/third_party/blink/public/mojom/use_counter/metrics/css_property_id.mojom
 +++ b/third_party/blink/public/mojom/use_counter/metrics/css_property_id.mojom
 @@ -48,6 +48,7 @@ enum CSSSampleId {
@@ -86,23 +31,11 @@ index 32e70a4fa70ac2fc41d95813590fe9a7120eecde..54d292d737748302fa0369b73d876d84
  
      // This CSSSampleId represents page load for CSS histograms. It is recorded once
      // per page visit for each CSS histogram being logged on the blink side and the
-diff --git a/third_party/blink/public/web/web_settings.h b/third_party/blink/public/web/web_settings.h
-index a53b4901dde0dc83dce6c9b56616eef0d02d94a5..b419672af985f673f375fbb63b4d2b2c419e3e03 100644
---- a/third_party/blink/public/web/web_settings.h
-+++ b/third_party/blink/public/web/web_settings.h
-@@ -285,6 +285,7 @@ class WebSettings {
-   virtual void SetRequireTransientActivationAndAuthorizationForSubAppsAPIs(
-       bool) = 0;
-   virtual void SetRootScrollbarThemeColor(std::optional<SkColor>) = 0;
-+  virtual void SetCornerSmoothingCSS(bool) = 0;
- 
-  protected:
-   ~WebSettings() = default;
 diff --git a/third_party/blink/renderer/build/scripts/core/css/css_properties.py b/third_party/blink/renderer/build/scripts/core/css/css_properties.py
-index 6e991652d242795e292cea4c94cff59aaea078fa..b6834c78575520bb6e584dd2ce3333ac17299fef 100755
+index e189d584f05f2ce6354c03a9b19f56985df8a15e..41b430e8f2416be098494f5c49fb97cae13447aa 100755
 --- a/third_party/blink/renderer/build/scripts/core/css/css_properties.py
 +++ b/third_party/blink/renderer/build/scripts/core/css/css_properties.py
-@@ -314,7 +314,7 @@ class CSSProperties(object):
+@@ -312,7 +312,7 @@ class CSSProperties(object):
                  name_without_leading_dash = name_without_leading_dash[1:]
              internal_visited_order = 1
              if name_without_leading_dash.startswith(
@@ -112,16 +45,17 @@ index 6e991652d242795e292cea4c94cff59aaea078fa..b6834c78575520bb6e584dd2ce3333ac
                      'internal-forced-visited-'):
                  internal_visited_order = 0
 diff --git a/third_party/blink/renderer/core/css/css_properties.json5 b/third_party/blink/renderer/core/css/css_properties.json5
-index 5bacbf438f37363e8a6c2f61ff8eff0dae781aaa..e16363cbff7a4af50656f64f7f69ecfa15081245 100644
+index d5405c38bd0e7489b41935fe70e9b5896d872820..35019460c2e6f83ff5b07f0996d8fa32ca3b389e 100644
 --- a/third_party/blink/renderer/core/css/css_properties.json5
 +++ b/third_party/blink/renderer/core/css/css_properties.json5
-@@ -8810,6 +8810,24 @@
+@@ -8968,6 +8968,26 @@
        property_methods: ["ParseShorthand", "CSSValueFromComputedStyleInternal"],
      },
  
 +    {
 +      name: "-electron-corner-smoothing",
-+      property_methods: ["ParseSingleValue"],
++      property_methods: ["ParseSingleValue", "CSSValueFromComputedStyleInternal"],
++      interpolable: true,
 +      field_group: "*",
 +      field_template: "external",
 +      // To keep this patch small, Length is used instead of a more descriptive
@@ -129,22 +63,23 @@ index 5bacbf438f37363e8a6c2f61ff8eff0dae781aaa..e16363cbff7a4af50656f64f7f69ecfa
 +      // - `system-ui` = `Length::Auto()`
 +      // - percent     = `Length::Percent`
 +      type_name: "Length",
-+      converter: "ConvertCornerSmoothing",
-+      keywords: ["system-ui"],
 +      default_value: "Length::None()",
-+      typedom_types: ["Keyword", "Percentage"],
-+      is_border_radius: true,
-+      invalidate: ["paint", "border-radius", "clip"],
++      keywords: ["system-ui"],
++      converter: "ConvertCornerSmoothing",
++      runtime_flag: "ElectronCSSCornerSmoothing",
++      valid_for_permission_element: true,
++      valid_for_page_context: true,
++      invalidate: ["border-radius", "paint", "corner-shape"],
 +    },
 +
      // Visited properties.
      {
        name: "-internal-visited-color",
 diff --git a/third_party/blink/renderer/core/css/css_property_equality.cc b/third_party/blink/renderer/core/css/css_property_equality.cc
-index 936bd39e77a5a181a94a48129e38efc9c8c82847..75d332ef497018e4c863a47d4491d25da365206a 100644
+index 687332cf68b3b826d7dcbd5dc10d47f0cd7ce688..653bbb8aef7e6edb31d63b02a9799d5454ce8d57 100644
 --- a/third_party/blink/renderer/core/css/css_property_equality.cc
 +++ b/third_party/blink/renderer/core/css/css_property_equality.cc
-@@ -346,6 +346,8 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
+@@ -352,6 +352,8 @@ bool CSSPropertyEquality::PropertiesEqual(const PropertyHandle& property,
        return a.DominantBaseline() == b.DominantBaseline();
      case CSSPropertyID::kDynamicRangeLimit:
        return a.GetDynamicRangeLimit() == b.GetDynamicRangeLimit();
@@ -154,10 +89,10 @@ index 936bd39e77a5a181a94a48129e38efc9c8c82847..75d332ef497018e4c863a47d4491d25d
        return a.EmptyCells() == b.EmptyCells();
      case CSSPropertyID::kFill:
 diff --git a/third_party/blink/renderer/core/css/properties/longhands/longhands_custom.cc b/third_party/blink/renderer/core/css/properties/longhands/longhands_custom.cc
-index aa12ac9e27c55870269dd780e868b5eaee5acaab..1a06511ee56717df547817813eb80c3db1fa01df 100644
+index 7611587659b5eeccc84dc69bd50080bffaee0ea7..48f606df9c60e792d81d3a44d5acb66e3995052d 100644
 --- a/third_party/blink/renderer/core/css/properties/longhands/longhands_custom.cc
 +++ b/third_party/blink/renderer/core/css/properties/longhands/longhands_custom.cc
-@@ -12086,5 +12086,25 @@ const CSSValue* InternalEmptyLineHeight::ParseSingleValue(
+@@ -12279,5 +12279,36 @@ const CSSValue* InternalEmptyLineHeight::ParseSingleValue(
                                           CSSValueID::kNone>(stream);
  }
  
@@ -165,12 +100,6 @@ index aa12ac9e27c55870269dd780e868b5eaee5acaab..1a06511ee56717df547817813eb80c3d
 +    CSSParserTokenStream& stream,
 +    const CSSParserContext& context,
 +    const CSSParserLocalContext&) const {
-+  // Fail parsing if this rule is disabled by document settings.
-+  if (Settings* settings = context.GetDocument()->GetSettings();
-+      settings && !settings->GetElectronCornerSmoothingCSS()) {
-+    return nullptr;
-+  }
-+
 +  // Try to parse `system-ui` keyword first.
 +  if (auto* ident =
 +          css_parsing_utils::ConsumeIdent<CSSValueID::kSystemUi>(stream)) {
@@ -181,17 +110,35 @@ index aa12ac9e27c55870269dd780e868b5eaee5acaab..1a06511ee56717df547817813eb80c3d
 +      stream, context, CSSPrimitiveValue::ValueRange::kNonNegative);
 +}
 +
++const CSSValue* ElectronCornerSmoothing::CSSValueFromComputedStyleInternal(
++    const ComputedStyle& style,
++    const LayoutObject*,
++    bool allow_visited_style,
++    CSSValuePhase value_phase) const {
++  const Length& length = style.ElectronCornerSmoothing();
++  switch (length.GetType()) {
++    case Length::kAuto:
++      return CSSIdentifierValue::Create(CSSValueID::kSystemUi);
++    case Length::kPercent:
++      return CSSNumericLiteralValue::Create(
++          length.Percent(), CSSPrimitiveValue::UnitType::kPercentage);
++    default:
++      return CSSIdentifierValue::Create(CSSValueID::kNone);
++  }
++}
++
  }  // namespace css_longhand
  }  // namespace blink
 diff --git a/third_party/blink/renderer/core/css/resolver/style_builder_converter.cc b/third_party/blink/renderer/core/css/resolver/style_builder_converter.cc
-index 56429f6e0da31c28aef86b1b5a5e538207b42706..33c6a8ff7cf6ffff2952b5a8b9389eb04ee6946d 100644
+index 7a5a5e370daea769e710f56a8004d79efa721268..4ba371436c33049952d919dc734be835dfbc783a 100644
 --- a/third_party/blink/renderer/core/css/resolver/style_builder_converter.cc
 +++ b/third_party/blink/renderer/core/css/resolver/style_builder_converter.cc
-@@ -3900,4 +3900,12 @@ PositionArea StyleBuilderConverter::ConvertPositionArea(
-   return PositionArea(span[0], span[1], span[2], span[3]);
+@@ -4022,6 +4022,15 @@ PositionTryFallback StyleBuilderConverter::ConvertSinglePositionTryFallback(
+   return PositionTryFallback(scoped_name, tactic_list);
  }
  
-+Length StyleBuilderConverter::ConvertCornerSmoothing(StyleResolverState& state, const CSSValue& value) {
++Length StyleBuilderConverter::ConvertCornerSmoothing(StyleResolverState& state,
++                                                     const CSSValue& value) {
 +  auto* ident = DynamicTo<CSSIdentifierValue>(value);
 +  if (ident && ident->GetValueID() == CSSValueID::kSystemUi) {
 +    return Length::Auto();
@@ -199,79 +146,26 @@ index 56429f6e0da31c28aef86b1b5a5e538207b42706..33c6a8ff7cf6ffff2952b5a8b9389eb0
 +  return ConvertLength(state, value);
 +}
 +
- }  // namespace blink
+ FitText StyleBuilderConverter::ConvertFitText(StyleResolverState& state,
+                                               const CSSValue& value) {
+   const auto& list = To<CSSValueList>(value);
 diff --git a/third_party/blink/renderer/core/css/resolver/style_builder_converter.h b/third_party/blink/renderer/core/css/resolver/style_builder_converter.h
-index d761af01cc6b4ef01304dfe384c3aa92f414b8a2..de0f1c09f41b4f348a7163967f6d90d98fe7c06c 100644
+index 851355b1dc6650cded3d847b80917fcfe10c9239..3663993ca5fbc5a9fc2e45c76570cc484c28ec70 100644
 --- a/third_party/blink/renderer/core/css/resolver/style_builder_converter.h
 +++ b/third_party/blink/renderer/core/css/resolver/style_builder_converter.h
-@@ -421,6 +421,8 @@ class StyleBuilderConverter {
-                                                  const CSSValue&);
- 
-   static PositionArea ConvertPositionArea(StyleResolverState&, const CSSValue&);
-+
+@@ -435,6 +435,7 @@ class StyleBuilderConverter {
+   static PositionTryFallback ConvertSinglePositionTryFallback(
+       StyleResolverState&,
+       const CSSValue&);
 +  static Length ConvertCornerSmoothing(StyleResolverState&, const CSSValue&);
- };
- 
- template <typename T>
-diff --git a/third_party/blink/renderer/core/exported/web_settings_impl.cc b/third_party/blink/renderer/core/exported/web_settings_impl.cc
-index 4a29a2200eaab5084078e928a68c862296c6ff91..fcd879deec0e68b3b6988402d19570cf0065daa2 100644
---- a/third_party/blink/renderer/core/exported/web_settings_impl.cc
-+++ b/third_party/blink/renderer/core/exported/web_settings_impl.cc
-@@ -816,4 +816,8 @@ void WebSettingsImpl::SetRootScrollbarThemeColor(
-   settings_->SetRootScrollbarThemeColor(theme_color);
- }
- 
-+void WebSettingsImpl::SetCornerSmoothingCSS(bool available) {
-+  settings_->SetElectronCornerSmoothingCSS(available);
-+}
-+
- }  // namespace blink
-diff --git a/third_party/blink/renderer/core/exported/web_settings_impl.h b/third_party/blink/renderer/core/exported/web_settings_impl.h
-index 5e8d2bfbccd0625c2598544a9cba3d71373eded2..e68a97ee75754fc7196f11cf5c731550b5a12276 100644
---- a/third_party/blink/renderer/core/exported/web_settings_impl.h
-+++ b/third_party/blink/renderer/core/exported/web_settings_impl.h
-@@ -237,6 +237,7 @@ class CORE_EXPORT WebSettingsImpl final : public WebSettings {
-   void SetRequireTransientActivationAndAuthorizationForSubAppsAPIs(
-       bool) override;
-   void SetRootScrollbarThemeColor(std::optional<SkColor>) override;
-+  void SetCornerSmoothingCSS(bool) override;
- 
-   bool RenderVSyncNotificationEnabled() const {
-     return render_v_sync_notification_enabled_;
-diff --git a/third_party/blink/renderer/core/exported/web_view_impl.cc b/third_party/blink/renderer/core/exported/web_view_impl.cc
-index 15a6b41cacb7b66d95e6dc2cff8148c3d6c8c28b..88bb3d17a4ca0784f1f28fde14b9fa58e15b5c44 100644
---- a/third_party/blink/renderer/core/exported/web_view_impl.cc
-+++ b/third_party/blink/renderer/core/exported/web_view_impl.cc
-@@ -3577,6 +3577,9 @@ void WebViewImpl::UpdateRendererPreferences(
-       renderer_preferences_.view_source_line_wrap_enabled);
- 
-   MaybePreloadSystemFonts(GetPage());
-+
-+  GetSettings()->SetCornerSmoothingCSS(
-+      renderer_preferences_.electron_corner_smoothing_css);
- }
- 
- void WebViewImpl::SetHistoryIndexAndLength(int32_t history_index,
-diff --git a/third_party/blink/renderer/core/frame/settings.json5 b/third_party/blink/renderer/core/frame/settings.json5
-index f4cdee12ea4352067f5de3e074e43d51ef56d2e5..6377e4b1ea8aa46b0bf69f8420b6c439bea70dba 100644
---- a/third_party/blink/renderer/core/frame/settings.json5
-+++ b/third_party/blink/renderer/core/frame/settings.json5
-@@ -1261,5 +1261,10 @@
-       initial: false,
-       type: "bool"
-     },
-+    {
-+      name: "electronCornerSmoothingCSS",
-+      initial: true,
-+      invalidate: ["Style"],
-+    },
-   ],
- }
+   static FitText ConvertFitText(StyleResolverState&, const CSSValue&);
+   static TextOverflowData ConvertTextOverflow(StyleResolverState&,
+                                               const CSSValue&);
 diff --git a/third_party/blink/renderer/core/paint/contoured_border_geometry.cc b/third_party/blink/renderer/core/paint/contoured_border_geometry.cc
-index 2c2f4f405074e5baa4a26f255283404f86b40e21..ebeb7d6988ee9e6a4e78cb82fc01fdad6721eaef 100644
+index ec80337fdac36fa1636f5142c3827d3bbc81644c..634db12dfb443acabde79e9faf59cb8415991464 100644
 --- a/third_party/blink/renderer/core/paint/contoured_border_geometry.cc
 +++ b/third_party/blink/renderer/core/paint/contoured_border_geometry.cc
-@@ -43,6 +43,24 @@ float EffectiveCurvature(Superellipse superellipse, const gfx::SizeF& radius) {
+@@ -50,6 +50,24 @@ float EffectiveCurvature(Superellipse superellipse, const gfx::SizeF& radius) {
                            : superellipse.Exponent();
  }
  
@@ -293,24 +187,24 @@ index 2c2f4f405074e5baa4a26f255283404f86b40e21..ebeb7d6988ee9e6a4e78cb82fc01fdad
 +  return length.Percent() / 100.0f;
 +}
 +
- ContouredRect::CornerCurvature CalcCurvatureFor(
-     const ComputedStyle& style,
-     const FloatRoundedRect::Radii& radii) {
-@@ -50,7 +68,8 @@ ContouredRect::CornerCurvature CalcCurvatureFor(
+ gfx::QuadF ComputeHullQuad(const ContouredRect::Corner& corner) {
+   const gfx::PointF half_corner = corner.HalfCorner();
+   const gfx::PointF perpendicular_line =
+@@ -148,7 +166,8 @@ ContouredRect ComputeContouredBorderFromStyle(
        EffectiveCurvature(style.CornerTopLeftShape(), radii.TopLeft()),
        EffectiveCurvature(style.CornerTopRightShape(), radii.TopRight()),
        EffectiveCurvature(style.CornerBottomRightShape(), radii.BottomRight()),
 -      EffectiveCurvature(style.CornerBottomLeftShape(), radii.BottomLeft()));
 +      EffectiveCurvature(style.CornerBottomLeftShape(), radii.BottomLeft()),
 +      SmoothnessFromLength(style.ElectronCornerSmoothing()));
- }
- 
- ContouredRect PixelSnappedContouredBorderInternal(
+   if (curvature.IsRound()) {
+     return result;
+   }
 diff --git a/third_party/blink/renderer/platform/BUILD.gn b/third_party/blink/renderer/platform/BUILD.gn
-index 3788f76b50f6a1776baef2131033a62875e101b9..f3e2226021d1de6a5cb787538ca6c0f18f208670 100644
+index a33b5209d940d29ae607a05e993e6d5a34aa674f..72e1b4f8a8bbc879dc9e466b76e75d5366199ef8 100644
 --- a/third_party/blink/renderer/platform/BUILD.gn
 +++ b/third_party/blink/renderer/platform/BUILD.gn
-@@ -1658,6 +1658,8 @@ component("platform") {
+@@ -1657,6 +1657,8 @@ component("platform") {
      "widget/widget_base.h",
      "widget/widget_base_client.h",
      "windows_keyboard_codes.h",
@@ -320,10 +214,10 @@ index 3788f76b50f6a1776baef2131033a62875e101b9..f3e2226021d1de6a5cb787538ca6c0f1
  
    sources -= blink_platform_avx_files
 diff --git a/third_party/blink/renderer/platform/geometry/contoured_rect.h b/third_party/blink/renderer/platform/geometry/contoured_rect.h
-index 88e78f1d8050c73ae6a8929f23e636ef7a383404..17b63c5ecdcd8feb17b76a13392595c737c316b7 100644
+index 59031b23d3c50aa87db48a5c5a66c5ab04a8103a..1f83cf0dff83d748bf1caafd3685202c14a3aaed 100644
 --- a/third_party/blink/renderer/platform/geometry/contoured_rect.h
 +++ b/third_party/blink/renderer/platform/geometry/contoured_rect.h
-@@ -47,19 +47,29 @@ class PLATFORM_EXPORT ContouredRect {
+@@ -52,19 +52,29 @@ class PLATFORM_EXPORT ContouredRect {
      constexpr CornerCurvature(float top_left,
                                float top_right,
                                float bottom_right,
@@ -355,8 +249,8 @@ index 88e78f1d8050c73ae6a8929f23e636ef7a383404..17b63c5ecdcd8feb17b76a13392595c7
 +      return (top_left_ == kRound) && IsUniform() && !IsSmooth();
      }
  
-     constexpr bool IsUniform() const {
-@@ -71,6 +81,7 @@ class PLATFORM_EXPORT ContouredRect {
+     constexpr bool IsConvex() const {
+@@ -86,6 +96,7 @@ class PLATFORM_EXPORT ContouredRect {
      constexpr float TopRight() const { return top_right_; }
      constexpr float BottomRight() const { return bottom_right_; }
      constexpr float BottomLeft() const { return bottom_left_; }
@@ -364,7 +258,7 @@ index 88e78f1d8050c73ae6a8929f23e636ef7a383404..17b63c5ecdcd8feb17b76a13392595c7
  
      constexpr bool operator==(const CornerCurvature&) const = default;
  
-@@ -81,6 +92,7 @@ class PLATFORM_EXPORT ContouredRect {
+@@ -96,6 +107,7 @@ class PLATFORM_EXPORT ContouredRect {
      float top_right_ = kRound;
      float bottom_right_ = kRound;
      float bottom_left_ = kRound;
@@ -373,7 +267,7 @@ index 88e78f1d8050c73ae6a8929f23e636ef7a383404..17b63c5ecdcd8feb17b76a13392595c7
  
    // A Corner is a axis-aligned quad, with the points ordered (start, outer,
 diff --git a/third_party/blink/renderer/platform/geometry/path_builder.cc b/third_party/blink/renderer/platform/geometry/path_builder.cc
-index b17bc9760b97b1e72783ae174ffa0f69ca830462..226b546694524e3848ea849059df74970403690e 100644
+index 7e3d46902fbf736b4240eb3fcb89975a7b222197..57fdc89fc265ad70cb0bff8443cc10268d154ed9 100644
 --- a/third_party/blink/renderer/platform/geometry/path_builder.cc
 +++ b/third_party/blink/renderer/platform/geometry/path_builder.cc
 @@ -4,6 +4,7 @@
@@ -384,7 +278,7 @@ index b17bc9760b97b1e72783ae174ffa0f69ca830462..226b546694524e3848ea849059df7497
  #include "third_party/blink/renderer/platform/geometry/contoured_rect.h"
  #include "third_party/blink/renderer/platform/geometry/infinite_int_rect.h"
  #include "third_party/blink/renderer/platform/geometry/path.h"
-@@ -241,6 +242,26 @@ PathBuilder& PathBuilder::AddContouredRect(
+@@ -244,6 +245,32 @@ PathBuilder& PathBuilder::AddContouredRect(
      AddRoundedRect(target_rect);
      return *this;
    }
@@ -400,14 +294,35 @@ index b17bc9760b97b1e72783ae174ffa0f69ca830462..226b546694524e3848ea849059df7497
 +    float smoothness = std::clamp(
 +        contoured_rect.GetCornerCurvature().Smoothness(), 0.0f, 1.0f);
 +
++    // Since the Electron implementation of DrawSmoothRoundRect uses one radius
++    // for both dimensions, we need to use the minimum of the two supplied.
++    auto min_radius = [](const gfx::SizeF& radius) -> float {
++      return std::min(radius.width(), radius.height());
++    };
++
 +    builder_.addPath(electron::DrawSmoothRoundRect(
 +        box.x(), box.y(), box.width(), box.height(), smoothness,
-+        radii.TopLeft().width(), radii.TopRight().width(),
-+        radii.BottomRight().width(), radii.BottomLeft().width()));
++        min_radius(radii.TopLeft()), min_radius(radii.TopRight()),
++        min_radius(radii.BottomRight()), min_radius(radii.BottomLeft())));
 +
 +    return *this;
 +  }
 +
    const FloatRoundedRect& origin_rect = contoured_rect.GetOriginRect();
  
-   // This would include the outer border of the rect, as well as shadow and
+   auto DrawAsSinglePath = [&]() {
+diff --git a/third_party/blink/renderer/platform/runtime_enabled_features.json5 b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+index ea02c7d8861a7d465a948ec0ec12f818651d1baa..53b392c76821acc067b348e4abc485a2605e056b 100644
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -214,6 +214,10 @@
+   },
+ 
+   data: [
++    {
++      name: "ElectronCSSCornerSmoothing",
++      status: "stable",
++    },
+     {
+       name: "Accelerated2dCanvas",
+       settable_from_internals: true,

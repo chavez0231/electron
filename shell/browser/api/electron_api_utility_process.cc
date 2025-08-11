@@ -17,7 +17,6 @@
 #include "content/public/browser/child_process_host.h"
 #include "content/public/browser/service_process_host.h"
 #include "content/public/common/result_codes.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "shell/browser/api/message_port.h"
@@ -28,11 +27,13 @@
 #include "shell/common/gin_converters/file_path_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/object_template_builder.h"
 #include "shell/common/node_includes.h"
 #include "shell/common/v8_util.h"
 #include "third_party/blink/public/common/messaging/message_port_descriptor.h"
 #include "third_party/blink/public/common/messaging/transferable_message_mojom_traits.h"
+#include "third_party/blink/public/mojom/blob/blob.mojom.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include "base/posix/eintr_wrapper.h"
@@ -60,7 +61,7 @@ GetAllUtilityProcessWrappers() {
 
 namespace api {
 
-gin::WrapperInfo UtilityProcessWrapper::kWrapperInfo = {
+gin::DeprecatedWrapperInfo UtilityProcessWrapper::kWrapperInfo = {
     gin::kEmbedderNativeGin};
 
 UtilityProcessWrapper::UtilityProcessWrapper(
@@ -78,6 +79,9 @@ UtilityProcessWrapper::UtilityProcessWrapper(
   base::FileHandleMappingVector fds_to_remap;
 #endif
   for (const auto& [io_handle, io_type] : stdio) {
+    if (io_handle == IOHandle::STDIN)
+      continue;
+
     if (io_type == IOType::IO_PIPE) {
 #if BUILDFLAG(IS_WIN)
       HANDLE read = nullptr;
@@ -343,7 +347,7 @@ void UtilityProcessWrapper::PostMessage(gin::Arguments* args) {
   }
 
   v8::Local<v8::Value> transferables;
-  std::vector<gin::Handle<MessagePort>> wrapped_ports;
+  std::vector<gin_helper::Handle<MessagePort>> wrapped_ports;
   if (args->GetNext(&transferables)) {
     std::vector<v8::Local<v8::Value>> wrapped_port_values;
     if (!gin::ConvertFromV8(args->isolate(), transferables,
@@ -431,7 +435,7 @@ raw_ptr<UtilityProcessWrapper> UtilityProcessWrapper::FromProcessId(
 }
 
 // static
-gin::Handle<UtilityProcessWrapper> UtilityProcessWrapper::Create(
+gin_helper::Handle<UtilityProcessWrapper> UtilityProcessWrapper::Create(
     gin::Arguments* args) {
   if (!Browser::Get()->is_ready()) {
     gin_helper::ErrorThrower(args->isolate())
@@ -494,7 +498,7 @@ gin::Handle<UtilityProcessWrapper> UtilityProcessWrapper::Create(
     opts.Get("allowLoadingUnsignedLibraries", &use_plugin_helper);
 #endif
   }
-  auto handle = gin::CreateHandle(
+  auto handle = gin_helper::CreateHandle(
       args->isolate(), new UtilityProcessWrapper(
                            std::move(params), display_name, std::move(stdio),
                            env_map, current_working_directory,
@@ -527,8 +531,8 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  v8::Isolate* isolate = context->GetIsolate();
-  gin_helper::Dictionary dict(isolate, exports);
+  v8::Isolate* const isolate = electron::JavascriptEnvironment::GetIsolate();
+  gin_helper::Dictionary dict{isolate, exports};
   dict.SetMethod("_fork", &electron::api::UtilityProcessWrapper::Create);
 }
 

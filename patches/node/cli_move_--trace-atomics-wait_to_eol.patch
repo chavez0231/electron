@@ -15,10 +15,50 @@ Reviewed-By: Benjamin Gruenbaum <benjamingr@gmail.com>
 Reviewed-By: Yagiz Nizipli <yagiz.nizipli@sentry.io>
 
 diff --git a/doc/api/cli.md b/doc/api/cli.md
-index 114b7bbf6b1e105fc1696ed8a064065db73ff519..ad863e52761332c3249a86af0e3d239cd0f73b03 100644
+index 404e87e6d1237b5ee79cafd8a959c1b6d9d23fe5..7deda572c940f7b2e8c6813f1826796a13e4db38 100644
 --- a/doc/api/cli.md
 +++ b/doc/api/cli.md
-@@ -3313,7 +3313,6 @@ one is included in the list below.
+@@ -2709,39 +2709,6 @@ added: v12.0.0
+ Set default [`tls.DEFAULT_MIN_VERSION`][] to 'TLSv1.3'. Use to disable support
+ for TLSv1.2, which is not as secure as TLSv1.3.
+ 
+-### `--trace-atomics-wait`
+-
+-<!-- YAML
+-added: v14.3.0
+-deprecated:
+-  - v18.8.0
+-  - v16.18.0
+--->
+-
+-> Stability: 0 - Deprecated
+-
+-Print short summaries of calls to [`Atomics.wait()`][] to stderr.
+-The output could look like this:
+-
+-```text
+-(node:15701) [Thread 0] Atomics.wait(&lt;address> + 0, 1, inf) started
+-(node:15701) [Thread 0] Atomics.wait(&lt;address> + 0, 1, inf) did not wait because the values mismatched
+-(node:15701) [Thread 0] Atomics.wait(&lt;address> + 0, 0, 10) started
+-(node:15701) [Thread 0] Atomics.wait(&lt;address> + 0, 0, 10) timed out
+-(node:15701) [Thread 0] Atomics.wait(&lt;address> + 4, 0, inf) started
+-(node:15701) [Thread 1] Atomics.wait(&lt;address> + 4, -1, inf) started
+-(node:15701) [Thread 0] Atomics.wait(&lt;address> + 4, 0, inf) was woken up by another thread
+-(node:15701) [Thread 1] Atomics.wait(&lt;address> + 4, -1, inf) was woken up by another thread
+-```
+-
+-The fields here correspond to:
+-
+-* The thread id as given by [`worker_threads.threadId`][]
+-* The base address of the `SharedArrayBuffer` in question, as well as the
+-  byte offset corresponding to the index passed to `Atomics.wait()`
+-* The expected value that was passed to `Atomics.wait()`
+-* The timeout passed to `Atomics.wait`
+-
+ ### `--trace-deprecation`
+ 
+ <!-- YAML
+@@ -3423,7 +3390,6 @@ one is included in the list below.
  * `--tls-min-v1.1`
  * `--tls-min-v1.2`
  * `--tls-min-v1.3`
@@ -27,10 +67,10 @@ index 114b7bbf6b1e105fc1696ed8a064065db73ff519..ad863e52761332c3249a86af0e3d239c
  * `--trace-env-js-stack`
  * `--trace-env-native-stack`
 diff --git a/doc/node.1 b/doc/node.1
-index 9f534746ef9d9c1c1ee2edd6c195573a2e228600..e01fc511a1034518c0fb9bc5fa925524aecad927 100644
+index f41323c799ad34c8e17a36d81e4cc2b16e50e9ee..a9ff54edfad1d053ec1ac544f28e14a1898ac177 100644
 --- a/doc/node.1
 +++ b/doc/node.1
-@@ -533,11 +533,6 @@ but the option is supported for compatibility with older Node.js versions.
+@@ -539,11 +539,6 @@ but the option is supported for compatibility with older Node.js versions.
  Set default minVersion to 'TLSv1.3'. Use to disable support for TLSv1.2 in
  favour of TLSv1.3, which is more secure.
  .
@@ -43,10 +83,10 @@ index 9f534746ef9d9c1c1ee2edd6c195573a2e228600..e01fc511a1034518c0fb9bc5fa925524
  Print stack traces for deprecations.
  .
 diff --git a/src/node.cc b/src/node.cc
-index 2f58a6fa69069dabb99b5ddb8011991b07fa5f02..9f6fa646ba6673f67f5f625e157ed850633a26da 100644
+index 0c2a4d344c991c2ca0d9d90934cf7921abf2a629..19d9fb77f1aaf003e43b7d7016f45e6c35df06b3 100644
 --- a/src/node.cc
 +++ b/src/node.cc
-@@ -226,44 +226,6 @@ void Environment::WaitForInspectorFrontendByOptions() {
+@@ -232,44 +232,6 @@ void Environment::WaitForInspectorFrontendByOptions() {
  }
  #endif  // HAVE_INSPECTOR
  
@@ -91,7 +131,7 @@ index 2f58a6fa69069dabb99b5ddb8011991b07fa5f02..9f6fa646ba6673f67f5f625e157ed850
  void Environment::InitializeDiagnostics() {
    isolate_->GetHeapProfiler()->AddBuildEmbedderGraphCallback(
        Environment::BuildEmbedderGraph, this);
-@@ -272,17 +234,6 @@ void Environment::InitializeDiagnostics() {
+@@ -278,17 +240,6 @@ void Environment::InitializeDiagnostics() {
    }
    if (options_->trace_uncaught)
      isolate_->SetCaptureStackTraceForUncaughtExceptions(true);
@@ -110,10 +150,10 @@ index 2f58a6fa69069dabb99b5ddb8011991b07fa5f02..9f6fa646ba6673f67f5f625e157ed850
      isolate_->SetPromiseHook(TracePromises);
    }
 diff --git a/src/node_options.cc b/src/node_options.cc
-index 54b253aa54f5cdebdb04315f9c6c2506977555c0..acf390bd456c7ddfa6987e440fb45940aec6b1ff 100644
+index d6988a5a8c068022d10607c32e57ac667f821337..4deaa52a8a4688bca32d41b74124604b6e33c80b 100644
 --- a/src/node_options.cc
 +++ b/src/node_options.cc
-@@ -762,10 +762,6 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
+@@ -773,10 +773,6 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
              "throw an exception on deprecations",
              &EnvironmentOptions::throw_deprecation,
              kAllowedInEnvvar);
@@ -125,10 +165,10 @@ index 54b253aa54f5cdebdb04315f9c6c2506977555c0..acf390bd456c7ddfa6987e440fb45940
              "show stack traces on deprecations",
              &EnvironmentOptions::trace_deprecation,
 diff --git a/src/node_options.h b/src/node_options.h
-index 065457acfde6ba4d04ed570cc72005cfd2798fd5..150f833bb21bd6d37f652f0785a4a98f3de5f67d 100644
+index 2b7df46312b8be58d6062b6a2f6084247e075c37..2d52cde518926577834f77424fa5b2231ca3374e 100644
 --- a/src/node_options.h
 +++ b/src/node_options.h
-@@ -203,7 +203,6 @@ class EnvironmentOptions : public Options {
+@@ -204,7 +204,6 @@ class EnvironmentOptions : public Options {
    std::vector<std::string> coverage_include_pattern;
    std::vector<std::string> coverage_exclude_pattern;
    bool throw_deprecation = false;
